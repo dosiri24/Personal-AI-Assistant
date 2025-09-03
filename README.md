@@ -99,6 +99,44 @@ Personal-AI-Assistant/
 poetry run pytest
 ```
 
+## 🔧 개발 도구
+
+### GitHub Copilot MCP 연동
+
+이 프로젝트는 GitHub Copilot과 MCP (Model Context Protocol)를 통해 연동되어 있습니다.
+
+#### MCP 서버 설정
+`.vscode/settings.json`에 다음과 같은 MCP 서버가 구성되어 있습니다:
+
+- **Codex CLI**: 고급 코드 분석, 생성, 리팩토링 기능
+
+#### MCP 서버 사용법
+GitHub Copilot Chat에서 다음과 같이 요청할 수 있습니다:
+
+```
+@codex 현재 코드베이스를 분석하고 개선점을 찾아줘
+@codex 이 함수를 더 효율적으로 리팩토링해줘
+@codex 현재 프로젝트의 복잡한 쉘 스크립트를 생성해줘
+```
+
+자세한 MCP 설정은 [.vscode/README.md](.vscode/README.md)를 참조하세요.
+
+### 개발 명령어
+
+```bash
+# 프로젝트 빌드
+poetry run pai build
+
+# 테스트 실행
+poetry run pytest
+
+# 로그 확인
+poetry run pai logs --follow
+
+# 시스템 상태 확인
+poetry run pai health
+```
+
 ### 코드 포맷팅
 
 ```bash

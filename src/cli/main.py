@@ -2,8 +2,14 @@
 
 import click
 import time
+import sys
 from pathlib import Path
-from utils.logger import setup_logging, get_logger
+
+# 프로젝트 루트를 Python 경로에 추가
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.utils.logger import setup_logging, get_logger
 
 
 @click.group()
@@ -26,8 +32,8 @@ def cli(log_level):
 @click.option("--daemon", is_flag=True, help="백그라운드 데몬으로 실행")
 def start(daemon):
     """AI 비서 서비스를 시작합니다."""
-    from config import get_settings
-    from daemon import DaemonManager
+    from src.config import get_settings
+    from src.daemon import DaemonManager
     
     logger = get_logger("cli")
     settings = get_settings()
@@ -74,8 +80,8 @@ def start(daemon):
 @cli.command()
 def stop():
     """AI 비서 서비스를 중지합니다."""
-    from config import get_settings
-    from daemon import DaemonManager
+    from src.config import get_settings
+    from src.daemon import DaemonManager
     
     logger = get_logger("cli")
     settings = get_settings()
@@ -106,8 +112,8 @@ def stop():
 @cli.command()
 def restart():
     """AI 비서 서비스를 재시작합니다."""
-    from config import get_settings
-    from daemon import DaemonManager
+    from src.config import get_settings
+    from src.daemon import DaemonManager
     
     logger = get_logger("cli")
     settings = get_settings()
@@ -135,8 +141,8 @@ def restart():
 @cli.command()
 def health():
     """AI 비서 서비스의 상세 헬스체크를 수행합니다."""
-    from config import get_settings
-    from daemon import DaemonManager, ServiceStatus
+    from src.config import get_settings
+    from src.daemon import DaemonManager, ServiceStatus
     
     logger = get_logger("cli")
     settings = get_settings()
@@ -208,8 +214,8 @@ def health():
 @cli.command()
 def status():
     """AI 비서 서비스 상태를 확인합니다."""
-    from config import get_settings
-    from daemon import DaemonManager, ServiceStatus
+    from src.config import get_settings
+    from src.daemon import DaemonManager, ServiceStatus
     
     logger = get_logger("cli")
     settings = get_settings()
@@ -298,7 +304,7 @@ def _start_service_main(dev_mode: bool = True):
 @click.option('--stats', is_flag=True, help='로그 파일 통계 출력')
 def maintenance(rotate, compress, cleanup, stats):
     """시스템 유지보수 작업을 수행합니다."""
-    from config import get_settings
+    from src.config import get_settings
     from log_manager import LogManager, PerformanceOptimizer
     
     settings = get_settings()
@@ -351,7 +357,7 @@ def maintenance(rotate, compress, cleanup, stats):
               help='로그 파일 타입')
 def logs(follow, lines, log_type):
     """AI Assistant 로그를 확인합니다."""
-    from config import get_settings
+    from src.config import get_settings
     import subprocess
     import sys
     
@@ -399,7 +405,7 @@ def test_config():
     """환경 설정을 테스트합니다."""
     click.echo("🔧 환경 설정 테스트를 시작합니다...")
     
-    from config import get_settings
+    from src.config import get_settings
     
     try:
         settings = get_settings()
@@ -419,10 +425,156 @@ def test_config():
         click.echo(f"   로그 디렉토리: {settings.get_logs_dir()}")
         click.echo(f"   데이터 디렉토리: {settings.get_data_dir()}")
         
-        click.echo("\n✅ 환경 설정 테스트가 완료되었습니다.")
+        click.echo("\n✅ 환경 설정 테스트 완료")
         
     except Exception as e:
-        click.echo(f"❌ 설정 로드 실패: {e}")
+        click.echo(f"❌ 환경 설정 테스트 실패: {e}")
+
+
+@cli.command()
+@click.option('--quick', is_flag=True, help='빠른 연결 테스트만 수행')
+def test_discord(quick):
+    """Discord Bot 연결을 테스트합니다."""
+    import asyncio
+    click.echo("🤖 Discord Bot 연결 테스트를 시작합니다...")
+    
+    try:
+        asyncio.run(_test_discord_connection(quick=quick))
+    except Exception as e:
+        click.echo(f"❌ Discord Bot 테스트 실패: {e}")
+
+
+async def _test_discord_connection(quick: bool = False):
+    """Discord Bot 연결 테스트 (비동기)"""
+    from src.config import get_settings
+    from discord_bot import DiscordBot
+    from discord_bot.bot import setup_basic_commands
+    import asyncio
+    
+    logger = get_logger("discord_test")
+    settings = get_settings()
+    
+    # 설정 확인
+    if not settings.discord_bot_token:
+        click.echo("❌ Discord Bot 토큰이 설정되지 않았습니다.")
+        click.echo("   .env 파일에 DISCORD_BOT_TOKEN을 설정해주세요.")
+        return
+    
+    click.echo("✅ Discord Bot 토큰이 설정되어 있습니다.")
+    
+    try:
+        # Bot 인스턴스 생성
+        click.echo("⏳ Discord Bot 인스턴스 생성 중...")
+        discord_bot = DiscordBot(settings)
+        
+        # 기본 명령어 설정
+        await setup_basic_commands(discord_bot)
+        click.echo("✅ Discord Bot 초기화 완료")
+        
+        if quick:
+            click.echo("⚡ 빠른 테스트 모드: 연결 준비만 확인")
+            status = discord_bot.get_status()
+            click.echo(f"   허용된 사용자: {status['allowed_users_count']}명")
+            click.echo(f"   관리자 사용자: {status['admin_users_count']}명")
+            click.echo("✅ Discord Bot 테스트 완료 (연결 없이)")
+            return
+        
+        # 실제 Discord 연결 테스트
+        click.echo("⏳ Discord 서버에 연결 중...")
+        click.echo("   (연결 테스트 후 자동으로 종료됩니다)")
+        
+        # 5초 후 자동 종료하는 태스크
+        async def auto_disconnect():
+            await asyncio.sleep(5)
+            await discord_bot.stop()
+            click.echo("⏹️  테스트 완료 - Bot 연결 해제")
+        
+        # 자동 종료 태스크 시작
+        disconnect_task = asyncio.create_task(auto_disconnect())
+        
+        try:
+            # Discord Bot 시작 (연결 테스트)
+            await discord_bot.start()
+        except Exception as e:
+            # 예상된 종료는 무시
+            if "Connection is closed" not in str(e):
+                raise
+        
+        # 상태 확인
+        status = discord_bot.get_status()
+        click.echo("\n📊 연결 테스트 결과:")
+        if status['user']:
+            click.echo(f"   Bot 계정: {status['user']}")
+            click.echo(f"   연결된 서버 수: {status['guild_count']}")
+        click.echo("✅ Discord Bot 연결 테스트 완료")
+        
+    except Exception as e:
+        click.echo(f"❌ Discord Bot 연결 실패: {e}")
+        logger.error(f"Discord Bot 테스트 실패: {e}")
+        raise
+
+
+@cli.command()
+@click.option("--message", required=True, help="처리할 자연어 메시지")
+@click.option("--user-id", type=int, default=0, help="사용자 ID")
+@click.option("--user-name", default="Unknown", help="사용자 이름")
+@click.option("--context", default="channel", help="메시지 컨텍스트 (dm/mention/channel)")
+@click.option("--format", default="text", help="출력 형식 (text/json)")
+def process_message(message, user_id, user_name, context, format):
+    """자연어 메시지를 AI가 처리합니다."""
+    import json
+    
+    logger = get_logger("cli")
+    logger.info(f"자연어 메시지 처리 요청: {message[:50]}...")
+    
+    try:
+        # Phase 3에서 구현될 AI 엔진 대신 임시 응답 생성
+        response_data = {
+            "status": "success",
+            "message": f"'{message}' 메시지를 받았습니다.",
+            "response": f"안녕하세요 {user_name}님! '{message}'라고 말씀하셨군요. 현재 AI 엔진이 개발 중이라 임시 응답을 드립니다. Phase 3에서 실제 LLM 처리가 구현될 예정입니다.",
+            "user_id": user_id,
+            "user_name": user_name,
+            "context": context,
+            "processing_time": "0.1s",
+            "ai_engine": "placeholder (Phase 3에서 구현 예정)"
+        }
+        
+        if format == "json":
+            click.echo(json.dumps(response_data, ensure_ascii=False, indent=2))
+        else:
+            click.echo(f"✅ 메시지 처리 완료")
+            click.echo(f"👤 사용자: {user_name} ({user_id})")
+            click.echo(f"📝 메시지: {message}")
+            click.echo(f"🤖 AI 응답: {response_data['response']}")
+            
+        logger.info("자연어 메시지 처리 완료")
+        
+    except Exception as e:
+        error_response = {
+            "status": "error",
+            "error": str(e),
+            "message": message
+        }
+        
+        if format == "json":
+            click.echo(json.dumps(error_response, ensure_ascii=False, indent=2))
+        else:
+            click.echo(f"❌ 메시지 처리 실패: {e}")
+            
+        logger.error(f"자연어 메시지 처리 실패: {e}")
+
+
+@cli.command()
+@click.argument('message', required=False)
+def test_old_parsing(message):
+    """구버전 명령어 파싱 시스템을 테스트합니다. (더 이상 사용되지 않음)"""
+    click.echo("⚠️  구버전 파싱 시스템은 더 이상 사용되지 않습니다.")
+    click.echo("� 새로운 단순화된 메시지 처리 시스템을 사용하세요:")
+    if message:
+        click.echo(f"   python -m src.cli.main process-message --message \"{message}\"")
+    else:
+        click.echo(f"   python -m src.cli.main process-message --message \"테스트 메시지\"")
 
 
 @cli.command()
@@ -430,7 +582,7 @@ def test_logs():
     """로깅 시스템을 테스트합니다."""
     click.echo("🧪 로깅 시스템 테스트를 시작합니다...")
     
-    from utils.logger import PersonalAILogger
+    from src.utils.logger import PersonalAILogger
     
     # 로깅 시스템 테스트
     logger_system = PersonalAILogger()

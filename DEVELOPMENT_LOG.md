@@ -201,12 +201,50 @@
 - **Phase 1 진행률**: 5/5 단계 (100%) ✅ 완료!
 - **현재 작업**: Phase 2 시작 준비
 
+##  Phase 2: Discord 통신 레이어 (진행 중)
+
+#### ✅ Step 2.1: Discord Bot 기본 구현 (완료)
+**목표**: Discord Bot 기본 연결 및 이벤트 처리
+
+**완료된 작업:**
+- [x] Discord Bot 모듈 구조 생성 (`src/discord_bot/`)
+- [x] Discord.py 기반 핵심 Bot 클래스 구현
+- [x] 기본 이벤트 핸들러 구현 (on_ready, on_message, on_error)
+- [x] 사용자 권한 관리 시스템 (허용된 사용자/관리자 구분)
+- [x] 메시지 처리 로직 (DM, 멘션 감지)
+- [x] 기본 Discord 명령어 구현 (!help, !status, !ping)
+- [x] Discord 인텐트 설정 (메시지 읽기 권한)
+- [x] CLI 테스트 명령어 추가 (`test-discord`)
+- [x] 봇 상태 관리 및 모니터링 기능
+
+**검증 완료:**
+- ✅ Discord Bot 인스턴스 생성 확인
+- ✅ 기본 명령어 설정 완료
+- ✅ 빠른 연결 테스트 통과
+- ✅ CLI 통합 테스트 성공
+
+**산출물:**
+- `src/discord_bot/__init__.py` - Discord Bot 모듈 초기화
+- `src/discord_bot/bot.py` - 완전한 Discord Bot 클래스
+- CLI 테스트 명령어 추가 (`test-discord`)
+
+**다음 단계:** Step 2.2 - 명령어 파싱 시스템
+
+---
+
+## 🎯 현재 진행 상황
+
+- **전체 진행률**: 6/40 단계 (15%)
+- **Phase 1 진행률**: 5/5 단계 (100%) ✅ 완료!
+- **Phase 2 진행률**: 1/4 단계 (25%) 🔄 진행 중
+- **현재 작업**: Step 2.2 - 명령어 파싱 시스템
+
 ## 📋 다음 작업 계획
 
-### 🔄 Phase 2: Discord 통신 레이어 (시작 예정)
+### 🔄 Phase 2: Discord 통신 레이어 (계속)
 
-#### Step 2.1: Discord Bot 기본 구현
-**목표**: Discord Bot 기본 연결 및 메시지 수신
+#### Step 2.2: 명령어 파싱 시스템 (다음 작업)
+**목표**: 자연어 명령을 구조화된 데이터로 변환
 
 **예정 작업:**
 
@@ -230,11 +268,12 @@
 - ✅ Step 1.4: CLI 기본 구조 구현
 - ✅ Step 1.5: 백그라운드 프로세스 관리
 - ✅ **Phase 1 완료!** 🎉
+- ✅ Step 2.1: Discord Bot 기본 구현
 
-**시작 예정:**
-- 🔄 Phase 2: Discord 통신 레이어
+**진행 중:**
+- 🔄 **Phase 2: Discord 통신 레이어**
 
 **다음 계획:**
-- Step 2.1: Discord Bot 기본 구현
-- Step 2.2: 메시지 처리 시스템  
-- Step 2.3: AI 엔진 연동
+- Step 2.2: 명령어 파싱 시스템
+- Step 2.3: 메시지 큐 시스템  
+- Step 2.4: 대화 세션 관리
