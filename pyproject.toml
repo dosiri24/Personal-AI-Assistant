@@ -1,0 +1,98 @@
+[tool.poetry]
+name = "personal-ai-assistant"
+version = "0.1.0"
+description = "Discord를 통해 자연어 명령을 받아 에이전틱 AI가 스스로 판단하고 MCP 도구를 활용하여 임무를 완수하는 지능형 개인 비서"
+authors = ["taesooa <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+# Discord Bot
+discord-py = "^2.3.2"
+
+# AI/ML - Gemini 2.5 Pro
+google-generativeai = "^0.8.0"
+
+# CLI Framework
+click = "^8.1.7"
+typer = "^0.12.0"
+
+# MCP (Model Context Protocol) - will be implemented manually
+# mcp = "^1.0.0"
+
+# Notion API
+notion-client = "^2.2.1"
+
+# Web Scraping
+beautifulsoup4 = "^4.12.2"
+scrapy = "^2.11.0"
+requests = "^2.31.0"
+feedparser = "^6.0.11"
+
+# Database & Vector Store
+chromadb = "^0.5.0"
+
+# Logging & Configuration
+loguru = "^0.7.2"
+rich = "^13.7.1"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+
+# Async & Process Management
+aiofiles = "^23.2.0"
+
+# Apple/macOS Integration
+applescript = "^2021.2.9"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-asyncio = "^0.23.0"
+pytest-cov = "^4.1.0"
+black = "^24.0.0"
+isort = "^5.13.0"
+flake8 = "^7.0.0"
+mypy = "^1.8.0"
+
+[tool.poetry.scripts]
+pai = "src.main:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v --cov=src --cov-report=html --cov-report=term-missing"
+asyncio_mode = "auto"
