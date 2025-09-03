@@ -415,6 +415,11 @@ def test_config():
         click.echo(f"   디버그 모드: {settings.debug}")
         click.echo(f"   로그 레벨: {settings.log_level}")
         
+        click.echo("\n🤖 AI 설정:")
+        click.echo(f"   AI 모델: {settings.ai_model}")
+        click.echo(f"   AI 온도: {settings.ai_temperature}")
+        click.echo(f"   최대 토큰: {settings.ai_max_tokens}")
+        
         click.echo("\n🔑 API 키 상태:")
         click.echo(f"   Google API 키: {'✅ 설정됨' if settings.has_valid_api_key() else '❌ 미설정'}")
         click.echo(f"   Discord Bot 토큰: {'✅ 설정됨' if settings.has_valid_discord_token() else '❌ 미설정'}")

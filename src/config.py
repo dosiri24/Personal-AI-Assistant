@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     
     def has_valid_api_key(self) -> bool:
         """유효한 API 키가 있는지 확인"""
-        return bool(self.google_api_key and not self.google_api_key.startswith('your_'))
+        return bool(self.google_ai_api_key and not self.google_ai_api_key.startswith('your_'))
     
     def has_valid_discord_token(self) -> bool:
         """유효한 Discord 토큰이 있는지 확인"""
