@@ -82,14 +82,22 @@ class DiscordBot:
         self.is_running = False
         self.message_handler: Optional[Callable] = None
         
-        # 새로운 메시지 처리 시스템 (단순화)
+        # 새로운 메시지 처리 시스템 (Phase 2 Step 2.3 업데이트)
         self.message_parser = MessageParser() if MessageParser else None
         self.message_router = MessageRouter() if MessageRouter else None
+        
+        # 메시지 큐 시스템 (Phase 2 Step 2.3)
+        from .message_queue import MessageQueue
+        self.message_queue = MessageQueue()
+        
+        # 세션 관리 시스템 (Phase 2 Step 2.4)
+        from .session import SessionManager
+        self.session_manager = SessionManager()
         
         # 이벤트 핸들러 등록
         self._setup_event_handlers()
         
-        self.logger.info("Discord Bot 초기화 완료 (Phase 2 Step 2.2 - 명령어 파싱 시스템 포함)")
+        self.logger.info("Discord Bot 초기화 완료 (Phase 2 Step 2.4 - 대화 세션 관리 포함)")
     
     def _parse_user_ids(self, user_ids_str: str) -> set[int]:
         """
@@ -208,7 +216,7 @@ class DiscordBot:
     
     async def _handle_ai_message(self, message: discord.Message):
         """
-        AI가 처리해야 할 메시지 핸들링 (Phase 2 Step 2.2 업데이트)
+        AI가 처리해야 할 메시지 핸들링 (Phase 2 Step 2.4 업데이트)
         
         Args:
             message: Discord 메시지 객체
@@ -225,20 +233,63 @@ class DiscordBot:
             
             # 타이핑 표시 시작
             async with message.channel.typing():
-                if not self.message_parser or not self.message_router:
-                    await message.reply("❌ 메시지 처리 시스템이 초기화되지 않았습니다.")
-                    return
+                # 세션 조회/생성 (Phase 2 Step 2.4)
+                session = await self.session_manager.get_or_create_session(
+                    user_id=message.author.id,
+                    user_name=str(message.author),
+                    channel_id=message.channel.id,
+                    channel_name=str(message.channel)
+                )
                 
-                # 1단계: 메시지 파싱 (단순화)
-                self.logger.info(f"메시지 파싱 시작: {content}")
-                parsed_message = self.message_parser.parse_message(message)
+                # 대화 턴 추가
+                turn_id = await self.session_manager.add_conversation_turn(
+                    user_id=message.author.id,
+                    user_message=content,
+                    metadata={
+                        "discord_message_id": message.id,
+                        "guild_id": message.guild.id if message.guild else None
+                    }
+                )
                 
-                # 2단계: 메시지 라우팅 및 응답 생성
-                self.logger.info(f"메시지 처리: {parsed_message.message_type.value}")
-                response = await self.message_router.route_message(parsed_message)
-                
-                # 3단계: 응답 전송
-                await self._send_response(message, response)
+                # 메시지 큐에 추가 (Phase 2 Step 2.3)
+                try:
+                    message_id = await self.message_queue.enqueue(
+                        user_id=message.author.id,
+                        channel_id=message.channel.id,
+                        content=content,
+                        message_type="natural_language",
+                        metadata={
+                            "discord_message_id": message.id,
+                            "session_id": session.session_id,
+                            "turn_id": turn_id,
+                            "guild_id": message.guild.id if message.guild else None,
+                            "author_name": str(message.author),
+                            "channel_name": str(message.channel)
+                        }
+                    )
+                    
+                    # 컨텍스트 조회 (최근 5개 대화)
+                    recent_context = await self.session_manager.get_conversation_context(
+                        user_id=message.author.id,
+                        turns_limit=5
+                    )
+                    
+                    context_info = ""
+                    if recent_context:
+                        context_info = f"\n💭 대화 컨텍스트: 최근 {len(recent_context)}개 대화 참조"
+                    
+                    # 큐에 추가되었음을 사용자에게 알림
+                    await message.reply(
+                        f"📋 메시지를 접수했습니다! (ID: `{message_id[:8]}...`)\n"
+                        f"🗣️ 세션: `{session.session_id[:8]}...`{context_info}\n"
+                        "처리가 완료되면 알려드릴게요. ⏳"
+                    )
+                    
+                    self.logger.info(f"메시지 처리 완료: {message_id} (세션: {session.session_id}, 턴: {turn_id})")
+                    
+                except Exception as e:
+                    self.logger.error(f"메시지 큐 추가 실패: {e}", exc_info=True)
+                    await message.reply("❌ 메시지 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
         
         except Exception as e:
             self.logger.error(f"메시지 처리 중 오류: {e}", exc_info=True)
@@ -283,7 +334,7 @@ class DiscordBot:
         self.message_handler = handler
         self.logger.info("메시지 핸들러 설정됨")
     
-    async def start(self) -> None:
+    async def start(self, token: Optional[str] = None):
         """
         Discord Bot 시작
         """
@@ -292,6 +343,13 @@ class DiscordBot:
         
         try:
             self.logger.info("Discord Bot 시작 중...")
+            
+            # 메시지 큐 시작 (Phase 2 Step 2.3)
+            await self.message_queue.start()
+            
+            # 세션 관리 시작 (Phase 2 Step 2.4)
+            await self.session_manager.start()
+            
             await self.bot.start(self.settings.discord_bot_token)
         except discord.LoginFailure:
             self.logger.error("Discord Bot 로그인 실패: 토큰을 확인해주세요")
@@ -299,22 +357,27 @@ class DiscordBot:
         except Exception as e:
             self.logger.error(f"Discord Bot 시작 실패: {e}", exc_info=True)
             raise
-    
-    async def stop(self) -> None:
+
+    async def stop(self):
         """
         Discord Bot 중지
         """
-        if self.bot.is_closed():
-            return
+        self.is_running = False
         
         try:
             self.logger.info("Discord Bot 중지 중...")
+            
+            # 메시지 큐 중지 (Phase 2 Step 2.3)
+            await self.message_queue.stop()
+            
+            # 세션 관리 중지 (Phase 2 Step 2.4)
+            await self.session_manager.stop()
+            
             await self.bot.close()
-            self.is_running = False
             self.logger.info("Discord Bot 중지 완료")
         except Exception as e:
             self.logger.error(f"Discord Bot 중지 중 오류: {e}", exc_info=True)
-    
+
     def get_status(self) -> dict[str, Any]:
         """
         Discord Bot 상태 정보 반환 (Phase 2 Step 2.2 업데이트)

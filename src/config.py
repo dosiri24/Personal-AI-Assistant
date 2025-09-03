@@ -47,7 +47,10 @@ class Settings(BaseSettings):
     admin_user_ids: str = Field(default="", description="관리자 Discord 사용자 ID 목록 (쉼표 구분)")
     
     # AI 설정
-    google_api_key: str = Field(default="", description="Google Gemini API 키")
+    google_ai_api_key: str = Field(default="", description="Google Gemini API 키")
+    ai_model: str = Field(default="gemini-2.0-flash-exp", description="사용할 AI 모델")
+    ai_temperature: float = Field(default=0.7, description="AI 응답 온도")
+    ai_max_tokens: int = Field(default=8192, description="AI 최대 토큰 수")
     gemini_api_rate_limit: int = Field(default=60, description="Gemini API 분당 요청 제한")
     
     # Notion 설정
@@ -87,6 +90,10 @@ class Settings(BaseSettings):
     def has_valid_discord_token(self) -> bool:
         """유효한 Discord 토큰이 있는지 확인"""
         return bool(self.discord_bot_token and not self.discord_bot_token.startswith('your_'))
+    
+    def has_valid_ai_api_key(self) -> bool:
+        """유효한 AI API 키가 있는지 확인"""
+        return bool(self.google_ai_api_key and not self.google_ai_api_key.startswith('your_'))
     
     def get_allowed_user_ids(self) -> List[str]:
         """허용된 사용자 ID 목록 반환"""

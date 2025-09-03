@@ -592,5 +592,566 @@ def test_logs():
     click.echo("📁 로그 파일들을 logs/ 디렉토리에서 확인할 수 있습니다.")
 
 
+@cli.command()
+@click.option("--clear", is_flag=True, help="모든 큐 메시지 삭제")
+@click.option("--status", default="all", help="상태별 필터 (pending, processing, completed, failed, timeout)")
+@click.option("--limit", default=10, help="표시할 메시지 수")
+def queue(clear, status, limit):
+    """메시지 큐 상태를 확인하고 관리합니다."""
+    from src.discord_bot.message_queue import MessageQueue, MessageStatus
+    import asyncio
+    
+    logger = get_logger("cli")
+    logger.info("메시지 큐 관리 요청")
+    
+    async def manage_queue():
+        try:
+            queue_manager = MessageQueue()
+            
+            if clear:
+                # 큐 초기화 (개발용)
+                click.echo("⚠️  큐 초기화는 아직 구현되지 않았습니다.")
+                return
+            
+            # 큐 통계 표시
+            stats = queue_manager.get_stats()
+            
+            click.echo("📊 메시지 큐 통계:")
+            click.echo(f"   총 메시지: {stats.get('total_messages', 0)}개")
+            click.echo(f"   최근 1시간: {stats.get('recent_messages', 0)}개")
+            click.echo(f"   캐시 크기: {stats.get('cache_size', 0)}개")
+            click.echo(f"   실행 상태: {'🟢 실행 중' if stats.get('is_running') else '🔴 중지됨'}")
+            click.echo(f"   등록된 핸들러: {stats.get('handlers_registered', 0)}개")
+            
+            # 상태별 메시지 수
+            status_counts = stats.get('status_counts', {})
+            if status_counts:
+                click.echo("\n📋 상태별 메시지:")
+                for status_name, count in status_counts.items():
+                    status_emoji = {
+                        'pending': '⏳',
+                        'processing': '🔄', 
+                        'completed': '✅',
+                        'failed': '❌',
+                        'timeout': '⏰'
+                    }.get(status_name, '📝')
+                    click.echo(f"   {status_emoji} {status_name}: {count}개")
+            
+            # 대기 중인 메시지 표시
+            if status == "all" or status == "pending":
+                pending_messages = await queue_manager.get_pending_messages(limit)
+                if pending_messages:
+                    click.echo(f"\n⏳ 대기 중인 메시지 (최대 {limit}개):")
+                    for msg in pending_messages:
+                        click.echo(f"   📝 {msg.id[:8]}... | 사용자: {msg.user_id} | {msg.created_at.strftime('%H:%M:%S')}")
+                        click.echo(f"      내용: {msg.content[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"큐 관리 실패: {e}", exc_info=True)
+            click.echo(f"❌ 큐 관리 실패: {e}")
+    
+    asyncio.run(manage_queue())
+
+
+@cli.command()
+@click.option("--user-id", type=int, help="특정 사용자 ID로 필터")
+@click.option("--status", default="all", help="세션 상태로 필터 (active, idle, expired, archived)")
+@click.option("--limit", default=10, help="표시할 세션 수")
+@click.option("--show-context", is_flag=True, help="최근 대화 내용 표시")
+def sessions(user_id, status, limit, show_context):
+    """사용자 세션 상태를 확인하고 관리합니다."""
+    from src.discord_bot.session import SessionManager, SessionStatus
+    import asyncio
+    
+    logger = get_logger("cli")
+    logger.info("세션 관리 요청")
+    
+    async def manage_sessions():
+        try:
+            session_manager = SessionManager()
+            
+            # 세션 통계 표시
+            stats = session_manager.get_stats()
+            
+            click.echo("👥 세션 관리 통계:")
+            click.echo(f"   활성 세션: {stats.get('active_sessions', 0)}개")
+            click.echo(f"   최근 활동: {stats.get('recent_active_sessions', 0)}개")
+            click.echo(f"   총 대화 턴: {stats.get('total_conversation_turns', 0)}개")
+            click.echo(f"   실행 상태: {'🟢 실행 중' if stats.get('is_running') else '🔴 중지됨'}")
+            
+            # 상태별 세션 수
+            status_counts = stats.get('status_counts', {})
+            if status_counts:
+                click.echo("\n📊 상태별 세션:")
+                for status_name, count in status_counts.items():
+                    status_emoji = {
+                        'active': '🟢',
+                        'idle': '🟡', 
+                        'expired': '🔴',
+                        'archived': '📦'
+                    }.get(status_name, '📝')
+                    click.echo(f"   {status_emoji} {status_name}: {count}개")
+            
+            # 특정 사용자 세션 조회
+            if user_id:
+                session = await session_manager._load_user_session(user_id)
+                if session:
+                    click.echo(f"\n👤 사용자 {user_id} 세션 정보:")
+                    click.echo(f"   세션 ID: {session.session_id}")
+                    click.echo(f"   상태: {session.status.value}")
+                    click.echo(f"   생성: {session.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                    click.echo(f"   마지막 활동: {session.last_activity.strftime('%Y-%m-%d %H:%M:%S')}")
+                    click.echo(f"   대화 턴: {len(session.conversation_turns)}개")
+                    
+                    if show_context and session.conversation_turns:
+                        click.echo("\n💬 최근 대화:")
+                        recent_turns = session.get_recent_conversation(5)
+                        for turn in recent_turns:
+                            click.echo(f"   👤 사용자: {turn.user_message[:50]}...")
+                            if turn.bot_response:
+                                click.echo(f"   🤖 봇: {turn.bot_response[:50]}...")
+                            click.echo(f"      ({turn.timestamp.strftime('%H:%M:%S')})")
+                else:
+                    click.echo(f"\n❌ 사용자 {user_id}의 세션을 찾을 수 없습니다.")
+            
+        except Exception as e:
+            logger.error(f"세션 관리 실패: {e}", exc_info=True)
+            click.echo(f"❌ 세션 관리 실패: {e}")
+    
+    asyncio.run(manage_sessions())
+
+
+@cli.command()
+@click.option("--message", "-m", default="안녕하세요! 테스트입니다.", help="테스트할 메시지")
+@click.option("--provider", "-p", default="gemini", help="사용할 LLM 프로바이더")
+def test_ai(message, provider):
+    """AI 엔진 연결 테스트"""
+    import asyncio
+    from src.config import get_settings
+    from src.ai_engine.llm_provider import LLMProviderManager, ChatMessage
+    
+    logger = get_logger("cli.test_ai")
+    logger.info("AI 엔진 테스트 시작")
+    
+    async def run_ai_test():
+        try:
+            # 설정 로드
+            cfg = get_settings()
+            
+            # API 키 확인
+            if not cfg.has_valid_ai_api_key():
+                click.echo("❌ Google AI API 키가 설정되지 않았습니다.")
+                click.echo("   .env 파일에 GOOGLE_AI_API_KEY를 설정해주세요.")
+                return
+            
+            click.echo("🤖 AI 엔진 연결 테스트 중...")
+            
+            # LLM 프로바이더 초기화
+            llm_manager = LLMProviderManager(cfg)
+            
+            if not await llm_manager.initialize_providers():
+                click.echo("❌ LLM 프로바이더 초기화 실패")
+                return
+            
+            # 사용 가능한 프로바이더 확인
+            available_providers = llm_manager.list_available_providers()
+            click.echo(f"✅ 사용 가능한 프로바이더: {', '.join(available_providers)}")
+            
+            # 프로바이더 선택
+            selected_provider = provider
+            if selected_provider not in available_providers:
+                click.echo(f"❌ 요청한 프로바이더 '{selected_provider}'를 사용할 수 없습니다.")
+                selected_provider = available_providers[0] if available_providers else None
+                if selected_provider:
+                    click.echo(f"   기본 프로바이더 '{selected_provider}' 사용")
+                else:
+                    click.echo("❌ 사용 가능한 프로바이더가 없습니다.")
+                    return
+            
+            # 테스트 메시지 전송
+            click.echo(f"📝 테스트 메시지: {message}")
+            
+            messages = [ChatMessage(role="user", content=message)]
+            response = await llm_manager.generate_response(
+                messages, 
+                provider_name=selected_provider,
+                temperature=0.7
+            )
+            
+            # 결과 출력
+            click.echo("\n🎯 AI 응답:")
+            click.echo("-" * 50)
+            click.echo(response.content)
+            click.echo("-" * 50)
+            
+            # 응답 메타데이터 출력
+            if response.usage:
+                click.echo(f"\n📊 사용량:")
+                click.echo(f"   프롬프트 토큰: {response.usage.get('prompt_tokens', 'N/A')}")
+                click.echo(f"   응답 토큰: {response.usage.get('completion_tokens', 'N/A')}")
+                click.echo(f"   총 토큰: {response.usage.get('total_tokens', 'N/A')}")
+            
+            click.echo(f"\n✅ AI 엔진 테스트 완료 (모델: {response.model})")
+            
+        except Exception as e:
+            logger.error(f"AI 테스트 실패: {e}", exc_info=True)
+            click.echo(f"❌ AI 테스트 실패: {e}")
+    
+    asyncio.run(run_ai_test())
+
+
+@cli.command()
+@click.option("--command", "-c", required=True, help="분석할 사용자 명령")
+@click.option("--user-id", "-u", default="test_user", help="사용자 ID")
+def test_nlp(command, user_id):
+    """자연어 처리 엔진 테스트"""
+    import asyncio
+    from src.config import get_settings
+    from src.ai_engine.natural_language import NaturalLanguageProcessor
+    
+    logger = get_logger("cli.test_nlp")
+    logger.info("자연어 처리 테스트 시작")
+    
+    async def run_nlp_test():
+        try:
+            # 설정 로드
+            cfg = get_settings()
+            
+            # API 키 확인
+            if not cfg.has_valid_ai_api_key():
+                click.echo("❌ Google AI API 키가 설정되지 않았습니다.")
+                return
+            
+            click.echo("🧠 자연어 처리 엔진 테스트 중...")
+            
+            # NLP 초기화
+            nlp = NaturalLanguageProcessor(cfg)
+            
+            if not await nlp.initialize():
+                click.echo("❌ 자연어 처리기 초기화 실패")
+                return
+            
+            click.echo(f"📝 분석할 명령: {command}")
+            
+            # 명령 파싱
+            parsed_command = await nlp.parse_command(command, user_id)
+            
+            # 결과 출력
+            click.echo("\n🎯 명령 분석 결과:")
+            click.echo("-" * 50)
+            click.echo(f"의도: {parsed_command.intent.value}")
+            click.echo(f"신뢰도: {parsed_command.confidence:.2f}")
+            click.echo(f"긴급도: {parsed_command.urgency.value}")
+            click.echo(f"필요한 도구: {', '.join(parsed_command.requires_tools) if parsed_command.requires_tools else '없음'}")
+            
+            if parsed_command.entities:
+                click.echo(f"추출된 개체:")
+                for key, value in parsed_command.entities.items():
+                    click.echo(f"  - {key}: {value}")
+            
+            if parsed_command.clarification_needed:
+                click.echo(f"명확화 필요:")
+                for clarification in parsed_command.clarification_needed:
+                    click.echo(f"  - {clarification}")
+            
+            goal = parsed_command.metadata.get("goal", "")
+            if goal:
+                click.echo(f"목표: {goal}")
+            
+            # 작업 계획 생성
+            click.echo("\n📋 작업 계획 생성 중...")
+            available_tools = ["notion", "calendar", "web_search", "file_manager"]
+            task_plan = await nlp.create_task_plan(parsed_command, available_tools)
+            
+            click.echo(f"작업 목표: {task_plan.goal}")
+            click.echo(f"예상 소요시간: {task_plan.estimated_duration}")
+            click.echo(f"난이도: {task_plan.difficulty}")
+            click.echo(f"계획 신뢰도: {task_plan.confidence:.2f}")
+            
+            if task_plan.steps:
+                click.echo("실행 단계:")
+                for step in task_plan.steps:
+                    step_num = step.get("step", "?")
+                    action = step.get("action", "")
+                    tool = step.get("tool", "")
+                    click.echo(f"  {step_num}. {action} (도구: {tool})")
+            
+            click.echo("\n✅ 자연어 처리 테스트 완료")
+            
+        except Exception as e:
+            logger.error(f"NLP 테스트 실패: {e}", exc_info=True)
+            click.echo(f"❌ NLP 테스트 실패: {e}")
+    
+    asyncio.run(run_nlp_test())
+
+
+@cli.command()
+@click.option("--user-id", default="test_user", help="테스트할 사용자 ID")
+@click.option("--message", default="내일 오후 2시에 팀 회의 일정을 추가해줘", help="테스트 메시지")
+def test_personalization(user_id, message):
+    """개인화된 응답 시스템 테스트"""
+    import asyncio
+    from src.config import get_settings
+    from src.ai_engine.natural_language import NaturalLanguageProcessor
+    
+    logger = get_logger("cli")
+    
+    async def run_personalization_test():
+        try:
+            click.echo("🧠 개인화된 응답 시스템 테스트 시작...")
+            
+            # 설정 로드
+            settings = get_settings()
+            
+            # 자연어 처리기 초기화
+            nlp = NaturalLanguageProcessor(settings)
+            await nlp.initialize()
+            
+            # 사용자 컨텍스트 설정
+            context = {
+                "user_profile": {
+                    "name": "테스트 사용자",
+                    "timezone": "Asia/Seoul",
+                    "work_hours": "09:00-18:00"
+                },
+                "conversation_history": [
+                    {"role": "user", "content": "안녕하세요", "timestamp": "2025-09-03T09:00:00"},
+                    {"role": "assistant", "content": "안녕하세요! 무엇을 도와드릴까요?", "timestamp": "2025-09-03T09:00:01"}
+                ]
+            }
+            
+            # 개인화된 응답 생성
+            click.echo(f"사용자 ID: {user_id}")
+            click.echo(f"메시지: {message}")
+            click.echo("\n🔄 개인화된 응답 생성 중...")
+            
+            response = await nlp.generate_personalized_response(user_id, message, context)
+            
+            click.echo(f"\n💬 개인화된 응답:")
+            click.echo(f"{response}")
+            
+            # 피드백 시뮬레이션
+            click.echo(f"\n📝 피드백 분석 테스트...")
+            feedback = {
+                "satisfaction_score": 8.5,
+                "helpful": True,
+                "tone_appropriate": True,
+                "detail_level": "적절함",
+                "improvement_suggestions": ["더 구체적인 시간 제안"],
+                "task_context": {
+                    "task_type": "schedule_management",
+                    "completed": True,
+                    "duration": "2분"
+                }
+            }
+            
+            analysis_result = await nlp.analyze_user_feedback(user_id, feedback)
+            
+            if analysis_result["status"] == "success":
+                click.echo(f"✅ 피드백 분석 완료")
+                analysis = analysis_result.get("analysis", {})
+                if "satisfaction_score" in analysis:
+                    click.echo(f"만족도 점수: {analysis['satisfaction_score']}")
+                if "user_preferences_learned" in analysis:
+                    click.echo(f"학습된 선호도: {analysis['user_preferences_learned']}")
+            else:
+                click.echo(f"❌ 피드백 분석 실패: {analysis_result.get('error', '알 수 없는 오류')}")
+            
+            click.echo("\n✅ 개인화 시스템 테스트 완료")
+            
+        except Exception as e:
+            logger.error(f"개인화 테스트 실패: {e}", exc_info=True)
+            click.echo(f"❌ 개인화 테스트 실패: {e}")
+    
+    asyncio.run(run_personalization_test())
+
+
+@cli.command()
+@click.option("--test-name", default="response_quality_test", help="A/B 테스트 이름")
+@click.option("--duration", default=7, help="테스트 기간 (일)")
+def create_ab_test(test_name, duration):
+    """프롬프트 A/B 테스트 생성 및 시작"""
+    from src.ai_engine.prompt_optimizer import PromptOptimizer, PromptVariant, MetricType
+    
+    logger = get_logger("cli")
+    
+    try:
+        click.echo("🧪 A/B 테스트 생성 중...")
+        
+        optimizer = PromptOptimizer()
+        
+        # 테스트 변형 생성
+        variant_a = PromptVariant(
+            id="variant_a_formal",
+            name="formal_response",
+            template="""다음 사용자 요청에 대해 공식적이고 전문적인 톤으로 응답해주세요:
+
+사용자 요청: $user_request
+
+응답은 다음 구조를 따르세요:
+1. 요청 이해 확인
+2. 구체적인 해결책 제시
+3. 추가 필요사항 안내
+
+전문적이고 정확한 정보를 제공해주세요.""",
+            description="공식적이고 전문적인 톤의 응답"
+        )
+        
+        variant_b = PromptVariant(
+            id="variant_b_casual",
+            name="casual_response", 
+            template="""다음 사용자 요청에 대해 친근하고 대화적인 톤으로 응답해주세요:
+
+사용자 요청: $user_request
+
+친구처럼 편안하게 대화하면서도 도움이 되는 정보를 제공해주세요.
+이해하기 쉽고 실용적인 조언을 해주세요.""",
+            description="친근하고 대화적인 톤의 응답"
+        )
+        
+        # A/B 테스트 생성
+        test = optimizer.create_ab_test(
+            name=test_name,
+            description="응답 품질과 사용자 만족도 개선을 위한 톤 비교 테스트",
+            variants=[variant_a, variant_b],
+            traffic_split={"variant_a_formal": 0.5, "variant_b_casual": 0.5},
+            target_metrics=[MetricType.USER_SATISFACTION, MetricType.USER_ENGAGEMENT],
+            min_sample_size=50
+        )
+        
+        # 테스트 시작
+        success = optimizer.start_test(test.id)
+        
+        if success:
+            click.echo(f"✅ A/B 테스트 생성 및 시작 완료")
+            click.echo(f"테스트 ID: {test.id}")
+            click.echo(f"테스트 이름: {test.name}")
+            click.echo(f"변형 수: {len(test.variants)}")
+            click.echo(f"최소 샘플 크기: {test.min_sample_size}")
+            click.echo(f"대상 지표: {[m.value for m in test.target_metrics]}")
+        else:
+            click.echo("❌ A/B 테스트 시작 실패")
+            
+    except Exception as e:
+        logger.error(f"A/B 테스트 생성 실패: {e}", exc_info=True)
+        click.echo(f"❌ A/B 테스트 생성 실패: {e}")
+
+
+@cli.command()
+@click.option("--test-id", help="분석할 테스트 ID (없으면 모든 활성 테스트)")
+def analyze_ab_test(test_id):
+    """A/B 테스트 결과 분석"""
+    from src.ai_engine.prompt_optimizer import PromptOptimizer
+    
+    logger = get_logger("cli")
+    
+    try:
+        click.echo("📊 A/B 테스트 결과 분석 중...")
+        
+        optimizer = PromptOptimizer()
+        
+        if test_id:
+            # 특정 테스트 분석
+            analysis = optimizer.analyze_test_results(test_id)
+            
+            if "error" in analysis:
+                click.echo(f"❌ 분석 실패: {analysis['error']}")
+                return
+                
+            click.echo(f"\n📋 테스트 분석 결과: {analysis['test_name']}")
+            click.echo(f"상태: {analysis['status']}")
+            click.echo(f"총 샘플: {analysis['total_samples']}")
+            
+            # 변형별 결과
+            for variant_id, variant_data in analysis["variants"].items():
+                click.echo(f"\n🔬 변형: {variant_data['name']}")
+                click.echo(f"샘플 크기: {variant_data['sample_size']}")
+                
+                for metric, stats in variant_data["metrics"].items():
+                    click.echo(f"  {metric}:")
+                    click.echo(f"    평균: {stats['mean']:.3f}")
+                    click.echo(f"    표준편차: {stats['std']:.3f}")
+                    click.echo(f"    범위: {stats['min']:.3f} - {stats['max']:.3f}")
+            
+            # 통계적 유의성
+            significance = analysis.get("statistical_significance", {})
+            if significance:
+                click.echo(f"\n📈 통계적 유의성:")
+                for metric, data in significance.items():
+                    if data.get("significant", False):
+                        click.echo(f"  {metric}: ✅ 유의미 (승자: {data['winner']})")
+                        click.echo(f"    효과 크기: {data['effect_size']:.1%}")
+                    else:
+                        click.echo(f"  {metric}: ❌ 유의하지 않음")
+            
+            # 추천사항
+            recommendations = analysis.get("recommendations", [])
+            if recommendations:
+                click.echo(f"\n💡 추천사항:")
+                for rec in recommendations:
+                    click.echo(f"  - {rec}")
+                    
+        else:
+            # 모든 활성 테스트 분석
+            if not optimizer.active_tests:
+                click.echo("활성 A/B 테스트가 없습니다.")
+                return
+                
+            for test_id, test in optimizer.active_tests.items():
+                click.echo(f"\n📊 테스트: {test.name} ({test_id})")
+                analysis = optimizer.analyze_test_results(test_id)
+                click.echo(f"샘플 수: {analysis.get('total_samples', 0)}")
+                click.echo(f"상태: {analysis.get('status', 'unknown')}")
+                
+        click.echo("\n✅ A/B 테스트 분석 완료")
+        
+    except Exception as e:
+        logger.error(f"A/B 테스트 분석 실패: {e}", exc_info=True)
+        click.echo(f"❌ A/B 테스트 분석 실패: {e}")
+
+
+@cli.command()
+def optimize_prompts():
+    """프롬프트 성능 최적화 실행"""
+    import asyncio
+    from src.config import get_settings
+    from src.ai_engine.natural_language import NaturalLanguageProcessor
+    
+    logger = get_logger("cli")
+    
+    async def run_optimization():
+        try:
+            click.echo("⚡ 프롬프트 성능 최적화 시작...")
+            
+            settings = get_settings()
+            nlp = NaturalLanguageProcessor(settings)
+            await nlp.initialize()
+            
+            # 최적화 실행
+            result = await nlp.optimize_prompt_performance()
+            
+            if result["status"] == "success":
+                click.echo(f"✅ 최적화 완료")
+                click.echo(f"적용된 최적화: {result['optimizations_applied']}개")
+                
+                for test_id, analysis in result["results"].items():
+                    click.echo(f"\n📊 {analysis.get('test_name', test_id)}:")
+                    click.echo(f"  샘플 수: {analysis.get('total_samples', 0)}")
+                    
+                    significance = analysis.get("statistical_significance", {})
+                    for metric, data in significance.items():
+                        if data.get("significant", False):
+                            click.echo(f"  ✅ {metric}: {data['winner']} 승리 ({data['effect_size']:.1%} 개선)")
+                            
+            else:
+                click.echo(f"❌ 최적화 실패: {result.get('error', '알 수 없는 오류')}")
+                
+        except Exception as e:
+            logger.error(f"프롬프트 최적화 실패: {e}", exc_info=True)
+            click.echo(f"❌ 프롬프트 최적화 실패: {e}")
+    
+    asyncio.run(run_optimization())
+
+
 if __name__ == "__main__":
     cli()
