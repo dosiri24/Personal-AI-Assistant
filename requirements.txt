@@ -22,6 +22,11 @@ feedparser>=6.0.11
 # Database & Vector Store (RAG)
 chromadb>=0.5.0
 
+# Embedding Models
+sentence-transformers>=2.2.2
+transformers>=4.35.0
+torch>=2.0.0
+
 # Logging & Console Output
 loguru>=0.7.2
 rich>=13.7.1
