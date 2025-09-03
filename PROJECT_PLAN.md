@@ -110,7 +110,7 @@
 - **AI 동적 크롤링**: HTML 구조 자동 분석 → 맞춤형 크롤링 코드 생성
 - **정보 필터링**: 중요도 자동 판단, 중복 제거, 요약 생성
 - **정기 모니터링**: 스케줄링을 통한 자동 업데이트 확인
-- **기술**: LLM HTML 분석, BeautifulSoup/Scrapy, RSS 파서
+- **기술**: Gemini 2.5 Pro HTML 분석, BeautifulSoup/Scrapy, RSS 파서
 
 ### 3. Apple 시스템 연동 도구 (우선순위 3)
 **목적**: macOS 알림 자동 감지 및 지능형 처리
@@ -152,7 +152,7 @@
 - **언어**: Python 3.11+
 - **CLI 프레임워크**: Click, Typer
 - **Discord**: discord.py
-- **AI/ML**: OpenAI API, Anthropic Claude
+- **AI/ML**: Google Gemini 2.5 Pro API
 - **MCP**: Model Context Protocol SDK
 - **Notion**: Notion API (notion-client)
 - **Apple**: Apple MCP Server (macOS 시스템 연동)
@@ -269,14 +269,14 @@
 ### 📊 Phase 3: AI 엔진 핵심
 
 #### Step 3.1: LLM 프로바이더 추상화
-**목표**: 다양한 LLM 서비스 통합 인터페이스
+**목표**: Gemini 2.5 Pro 기반 통합 인터페이스
 
-- OpenAI/Anthropic API 래퍼
+- Google Gemini 2.5 Pro API 래퍼
 - 공통 인터페이스 정의
 - 자동 프로바이더 선택 로직
 
 **산출물**: `src/ai_engine/llm_provider.py`  
-**검증**: 각 프로바이더별 API 호출 테스트
+**검증**: Gemini API 호출 테스트
 
 #### Step 3.2: 프롬프트 관리 시스템
 **목표**: 체계적인 프롬프트 템플릿 관리
@@ -433,7 +433,7 @@
 ### 📊 Phase 7: 웹 정보 수집 도구
 
 #### Step 7.1: HTML 구조 분석 AI
-**목표**: LLM 기반 HTML 이해 시스템
+**목표**: Gemini 2.5 Pro 기반 HTML 이해 시스템
 
 - DOM 트리 분석
 - 콘텐츠 영역 자동 식별
@@ -598,7 +598,7 @@
 ## 🚨 예상 문제점 및 대응 방안
 
 ### 1. API 제한 및 비용 관리
-**문제**: LLM API 호출 비용 급증  
+**문제**: Gemini API 호출 비용 관리  
 **대응**:
 - 응답 캐싱 시스템 구현
 - 토큰 사용량 모니터링
