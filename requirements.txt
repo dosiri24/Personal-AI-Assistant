@@ -1,0 +1,50 @@
+# Personal AI Assistant - Requirements
+# Python 3.11+ required
+
+# CLI Framework
+click>=8.1.7
+
+# Discord Bot
+discord.py>=2.3.2
+
+# AI/ML - Google Gemini
+google-generativeai>=0.8.0
+
+# Notion API
+notion-client>=2.2.1
+
+# Web Scraping
+beautifulsoup4>=4.12.2
+scrapy>=2.11.0
+requests>=2.31.0
+feedparser>=6.0.11
+
+# Database & Vector Store (RAG)
+chromadb>=0.5.0
+
+# Logging & Console Output
+loguru>=0.7.2
+rich>=13.7.1
+
+# Configuration & Data Validation
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Async & File Operations
+aiofiles>=23.2.0
+
+# Apple/macOS Integration
+applescript>=2021.2.9
+
+# Development & Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+black>=24.0.0
+isort>=5.13.0
+flake8>=7.0.0
+mypy>=1.8.0
+
+# Additional utilities that might be needed
+python-dotenv>=1.0.0
+typing-extensions>=4.8.0
