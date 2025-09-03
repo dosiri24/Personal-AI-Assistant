@@ -33,6 +33,7 @@ class ImportanceLevel(Enum):
     MEDIUM = 3      # 보통 중요도 (일반적인 대화, 루틴 작업)
     LOW = 2         # 낮은 중요도 (간단한 질문, 일시적 작업)
     MINIMAL = 1     # 자동 삭제 대상 (로그 수준 기록)
+    TRIVIAL = 0     # 매우 낮은 중요도 (즉시 삭제 대상)
     
     @property
     def retention_days(self) -> int:
@@ -42,7 +43,8 @@ class ImportanceLevel(Enum):
             ImportanceLevel.HIGH: 365,         # 1년
             ImportanceLevel.MEDIUM: 90,        # 3개월
             ImportanceLevel.LOW: 30,           # 1개월
-            ImportanceLevel.MINIMAL: 7         # 1주일
+            ImportanceLevel.MINIMAL: 7,        # 1주일
+            ImportanceLevel.TRIVIAL: 1         # 1일
         }
         return retention_map[self]
     
@@ -75,6 +77,14 @@ class ContextType(Enum):
     SITUATIONAL = "situational"    # 상황적 맥락 (이벤트, 상황)
 
 
+class MemoryStatus(Enum):
+    """기억 상태"""
+    ACTIVE = "active"              # 활성 상태
+    ARCHIVED = "archived"          # 아카이브됨
+    DELETED = "deleted"            # 삭제됨
+    COMPRESSED = "compressed"      # 압축됨
+
+
 @dataclass
 class MetadataSchema:
     """메타데이터 표준 스키마"""
@@ -88,6 +98,25 @@ class MetadataSchema:
     confidence: float = 1.0        # 데이터 신뢰도 (0.0-1.0)
     completeness: float = 1.0      # 데이터 완성도 (0.0-1.0)
     accuracy: float = 1.0          # 데이터 정확도 (0.0-1.0)
+    
+    # 중요도 정보
+    importance_score: float = 0.0  # 중요도 점수 (0.0-1.0)
+    importance_level: ImportanceLevel = ImportanceLevel.MEDIUM
+    
+    # 접근 통계
+    access_count: int = 0          # 접근 횟수
+    last_accessed: datetime = field(default_factory=datetime.now)
+    
+    # 압축 정보
+    is_compressed: bool = False    # 압축 여부
+    compression_ratio: float = 1.0 # 압축 비율
+    
+    # 상태 정보
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    
+    # 분류 정보
+    tags: List[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
     
     # 처리 정보
     processed_at: datetime = field(default_factory=datetime.now)
@@ -148,6 +177,7 @@ class BaseMemory:
     memory_type: MemoryType
     content: str
     importance: ImportanceLevel
+    source: str = "system"  # 추가: 데이터 출처
     
     # 확장된 메타데이터
     metadata: MetadataSchema = field(default_factory=MetadataSchema)
@@ -164,6 +194,7 @@ class BaseMemory:
     categories: List[str] = field(default_factory=list)
     
     # 품질 및 상태
+    status: MemoryStatus = MemoryStatus.ACTIVE
     is_archived: bool = False
     is_validated: bool = False
     validation_score: float = 0.0
