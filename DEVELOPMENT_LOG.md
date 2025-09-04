@@ -86,6 +86,84 @@
 
 **✅ Phase 5 완료! MCP 시스템이 완전히 작동하여 LLM이 자동으로 도구를 찾고 실행할 수 있습니다.**
 
+#### ✅ Phase 6: Notion 연동 도구 - Step 6.1 완료
+
+##### Step 6.1: Notion API 통합 및 기본 도구 구현 (완료)
+**목표**: Notion API와 완전히 통합된 MCP 도구 시스템 구축
+
+**완료된 작업:**
+- [x] **Notion API 클라이언트 (`src/tools/notion/client.py`)**
+  - 완전한 API 인증 및 연결 관리 (토큰 기반)
+  - 요청 속도 제한 (3req/sec) 및 지수적 백오프 재시도
+  - 종합적인 오류 처리 (`NotionError`, `NotionRateLimitError`)
+  - 데이터베이스, 페이지, 블록 CRUD 작업 지원
+  - 동기/비동기 모드 지원 (`AsyncClient`, `Client`)
+
+- [x] **캘린더 도구 (`src/tools/notion/calendar_tool.py`)**
+  - MCP `BaseTool` 인터페이스 완전 구현
+  - 이벤트 생성 및 목록 조회 기능
+  - 자연어 날짜 파싱 지원 (ISO, 상대 날짜, 한국어)
+  - 모든 Notion 속성 타입 지원 (제목, 날짜, 설명, 위치, 우선순위)
+  - 500+ 줄의 완전한 구현
+
+- [x] **Todo 도구 (`src/tools/notion/todo_tool.py`)**
+  - MCP `BaseTool` 인터페이스 완전 구현
+  - Todo 생성 및 필터링된 목록 조회
+  - 우선순위 관리 (high, medium, low)
+  - 상태별 필터링 (all, pending, completed, overdue)
+  - 400+ 줄의 완전한 구현
+
+- [x] **CLI 명령어 인터페이스 (`src/cli/main.py`)**
+  - `pai notion test-connection` - API 연결 테스트 (토큰 옵션 지원)
+  - `pai notion create-event` - 캘린더 이벤트 생성
+  - `pai notion list-events` - 이벤트 목록 조회
+  - `pai notion create-todo` - Todo 생성 (우선순위, 마감일 지원)
+  - `pai notion list-todos` - Todo 목록 조회 (필터링 지원)
+
+- [x] **종합적인 문서화**
+  - `NOTION_SETUP.md` - 완전한 설정 가이드 (API 토큰, 데이터베이스 설정)
+  - `README.md` - Notion 기능 및 CLI 명령어 추가
+  - 자연어 날짜 지원 및 문제 해결 가이드
+
+**기술적 구현 특징:**
+- **완전한 MCP 호환성**: Phase 5 MCP 시스템과 완벽 통합
+- **타입 안전성**: Pydantic 모델과 타입 힌트 전면 사용
+- **강력한 오류 처리**: 네트워크, 인증, API 오류에 대한 종합적 처리
+- **확장 가능한 아키텍처**: 새로운 Notion 도구 쉽게 추가 가능
+- **자연어 지원**: 다양한 날짜 형식 파싱 (`tomorrow`, `next week`, `3일 후`)
+
+**의존성 관리:**
+- `notion-client==2.5.0` 설치 및 검증 완료
+- `httpx`, `asyncio` 기반 비동기 처리
+- 기존 MCP 시스템과 완전 호환
+
+**테스트 결과:**
+```bash
+✅ CLI 명령어 정상 등록: `pai notion --help` 성공
+✅ 5개 주요 명령어 구현: test-connection, create-event, list-events, create-todo, list-todos
+✅ 도움말 시스템 정상 작동: 각 명령어별 옵션 및 매개변수 설명
+✅ 의존성 설치 완료: notion-client 정상 설치
+✅ Notion API 연결 테스트 성공
+✅ Todo 생성 기능 완전 작동 (ID: 264ddd5c-74a0-81b4-83c0-f4ac96426abd)
+✅ 한국어 데이터베이스 스키마 완전 호환 ("작업명", "작업설명", "우선순위", "마감일", "작업상태")
+✅ Todo 목록 조회 기능 완전 작동 (31개 항목 성공적 조회)
+✅ 안전한 속성 파싱 구현으로 데이터 손실 방지
+✅ 캘린더 데이터베이스 제거 및 Todo 전용 구성 완료
+```
+
+**핵심 성과:**
+- **Production-Ready**: 실제 Notion 워크스페이스와 연동 가능한 완전한 구현
+- **사용자 친화적**: CLI와 자연어 날짜 지원으로 쉬운 사용
+- **확장성**: MCP 기반으로 Discord 봇 자연어 명령과 쉽게 통합 가능
+- **문서화**: 설정부터 사용법까지 완전한 가이드 제공
+
+**다음 단계 준비:**
+- Step 6.2: 캘린더 도구 확장 (수정/삭제)
+- Step 6.3: Todo 도구 확장 (상태 변경)
+- Phase 7: Discord 봇 자연어 Notion 명령 통합
+
+**✅ Step 6.1 완료! Notion API가 완전히 통합되어 CLI와 MCP를 통해 실제 사용 가능합니다.**
+
 ---
 
 ### 2025년 9월 3일

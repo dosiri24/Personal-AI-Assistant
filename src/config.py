@@ -55,7 +55,6 @@ class Settings(BaseSettings):
     
     # Notion 설정
     notion_api_token: Optional[str] = Field(default=None, description="Notion API 토큰")
-    notion_calendar_database_id: Optional[str] = Field(default=None, description="Notion 캘린더 데이터베이스 ID")
     notion_todo_database_id: Optional[str] = Field(default=None, description="Notion 할일 데이터베이스 ID")
     notion_api_rate_limit: int = Field(default=3, description="Notion API 초당 요청 제한")
     

@@ -61,6 +61,29 @@ Discord에서 다음과 같은 자연어 명령을 사용할 수 있습니다:
 - `AI 관련 최신 뉴스 찾아서 요약해줘`
 - `중요한 메일이 오면 알려줘`
 
+### CLI 명령어
+
+직접 CLI를 통해서도 도구를 사용할 수 있습니다:
+
+```bash
+# Notion 연결 테스트
+poetry run pai notion test-connection
+
+# 캘린더 이벤트 생성
+poetry run pai notion create-event --title "팀 미팅" --date "tomorrow 14:00"
+
+# Todo 생성
+poetry run pai notion create-todo --title "문서 작성" --priority high
+
+# 이벤트 목록 조회
+poetry run pai notion list-events
+
+# Todo 목록 조회
+poetry run pai notion list-todos --filter pending
+```
+
+자세한 Notion 설정은 [NOTION_SETUP.md](NOTION_SETUP.md)를 참조하세요.
+
 ## 🏗️ 프로젝트 구조
 
 ```
