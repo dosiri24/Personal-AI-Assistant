@@ -124,8 +124,8 @@ class AgenticDecisionEngine:
                 name="notion_todo",
                 description="Notion 할일 데이터베이스를 관리합니다",
                 capabilities=["할일 추가", "할일 완료", "할일 조회", "우선순위 설정"],
-                required_params=["action", "task"],
-                optional_params=["priority", "due_date", "category"]
+                required_params=["action", "title"],
+                optional_params=["priority", "due_date", "category", "description"]
             ),
             Tool(
                 name="web_search",

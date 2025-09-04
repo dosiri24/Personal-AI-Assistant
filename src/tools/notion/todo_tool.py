@@ -156,6 +156,9 @@ class TodoTool(BaseTool):
             # 연결 테스트
             if not await self.notion_client.test_connection():
                 raise NotionError("Notion API 연결에 실패했습니다")
+        
+        # 타입 체커를 위한 assert
+        assert self.notion_client is not None, "Notion 클라이언트가 초기화되지 않았습니다"
     
     def _parse_datetime(self, date_str: str) -> datetime:
         """자연어나 ISO 형식의 날짜/시간을 파싱"""
@@ -433,6 +436,10 @@ class TodoTool(BaseTool):
     async def _get_todo(self, params: Dict[str, Any]) -> ToolResult:
         """단일 할일 조회"""
         try:
+            await self._ensure_client()
+            if self.notion_client is None:
+                raise NotionError("Notion 클라이언트 초기화 실패")
+            
             todo_id = params.get("todo_id") or params.get("id")
             if not todo_id:
                 return ToolResult(
@@ -529,6 +536,10 @@ class TodoTool(BaseTool):
     async def _complete_todo(self, params: Dict[str, Any]) -> ToolResult:
         """할일 완료 처리"""
         try:
+            await self._ensure_client()
+            if self.notion_client is None:
+                raise NotionError("Notion 클라이언트 초기화 실패")
+            
             todo_id = params.get("todo_id") or params.get("id")
             if not todo_id:
                 return ToolResult(
@@ -585,6 +596,10 @@ class TodoTool(BaseTool):
     async def _update_todo(self, params: Dict[str, Any]) -> ToolResult:
         """할일 수정"""
         try:
+            await self._ensure_client()
+            if self.notion_client is None:
+                raise NotionError("Notion 클라이언트 초기화 실패")
+            
             todo_id = params.get("todo_id") or params.get("id")
             if not todo_id:
                 return ToolResult(
@@ -675,6 +690,10 @@ class TodoTool(BaseTool):
     async def _delete_todo(self, params: Dict[str, Any]) -> ToolResult:
         """할일 삭제"""
         try:
+            await self._ensure_client()
+            if self.notion_client is None:
+                raise NotionError("Notion 클라이언트 초기화 실패")
+            
             todo_id = params.get("todo_id") or params.get("id")
             if not todo_id:
                 return ToolResult(

@@ -734,7 +734,7 @@ def test_ai(message, provider):
     """AI 엔진 연결 테스트"""
     import asyncio
     from src.config import get_settings
-    from src.ai_engine.llm_provider import LLMProviderManager, ChatMessage
+    from src.ai_engine.llm_provider import GeminiProvider, ChatMessage
     
     logger = get_logger("cli.test_ai")
     logger.info("AI 엔진 테스트 시작")
@@ -752,35 +752,26 @@ def test_ai(message, provider):
             
             click.echo("🤖 AI 엔진 연결 테스트 중...")
             
-            # LLM 프로바이더 초기화
-            llm_manager = LLMProviderManager(cfg)
+            # Gemini 프로바이더 초기화
+            llm_provider = GeminiProvider()
             
-            if not await llm_manager.initialize_providers():
-                click.echo("❌ LLM 프로바이더 초기화 실패")
+            if not await llm_provider.initialize():
+                click.echo("❌ Gemini 프로바이더 초기화 실패")
                 return
             
-            # 사용 가능한 프로바이더 확인
-            available_providers = llm_manager.list_available_providers()
-            click.echo(f"✅ 사용 가능한 프로바이더: {', '.join(available_providers)}")
+            # 프로바이더 가용성 확인
+            if not llm_provider.is_available():
+                click.echo("❌ Gemini 프로바이더를 사용할 수 없습니다")
+                return
             
-            # 프로바이더 선택
-            selected_provider = provider
-            if selected_provider not in available_providers:
-                click.echo(f"❌ 요청한 프로바이더 '{selected_provider}'를 사용할 수 없습니다.")
-                selected_provider = available_providers[0] if available_providers else None
-                if selected_provider:
-                    click.echo(f"   기본 프로바이더 '{selected_provider}' 사용")
-                else:
-                    click.echo("❌ 사용 가능한 프로바이더가 없습니다.")
-                    return
+            click.echo("✅ Gemini 프로바이더 초기화 성공")
             
             # 테스트 메시지 전송
             click.echo(f"📝 테스트 메시지: {message}")
             
             messages = [ChatMessage(role="user", content=message)]
-            response = await llm_manager.generate_response(
+            response = await llm_provider.generate_response(
                 messages, 
-                provider_name=selected_provider,
                 temperature=0.7
             )
             
@@ -793,9 +784,9 @@ def test_ai(message, provider):
             # 응답 메타데이터 출력
             if response.usage:
                 click.echo(f"\n📊 사용량:")
-                click.echo(f"   프롬프트 토큰: {response.usage.get('prompt_tokens', 'N/A')}")
-                click.echo(f"   응답 토큰: {response.usage.get('completion_tokens', 'N/A')}")
-                click.echo(f"   총 토큰: {response.usage.get('total_tokens', 'N/A')}")
+                click.echo(f"   입력 토큰: {response.usage.get('input_tokens', 'N/A')}")
+                click.echo(f"   출력 토큰: {response.usage.get('output_tokens', 'N/A')}")
+                click.echo(f"   모델: {response.model}")
             
             click.echo(f"\n✅ AI 엔진 테스트 완료 (모델: {response.model})")
             
@@ -1591,8 +1582,8 @@ def execute_ai(command):
             
             # 의사결정 결과
             click.echo("🧠 AI 의사결정:")
-            click.echo(f"   선택된 도구: {result.decision.selected_tool or '없음'}")
-            click.echo(f"   신뢰도: {result.decision.confidence:.3f}")
+            click.echo(f"   선택된 도구: {', '.join(result.decision.selected_tools) or '없음'}")
+            click.echo(f"   신뢰도: {result.decision.confidence_score:.3f}")
             click.echo(f"   추론: {result.decision.reasoning}")
             click.echo("")
             
@@ -1633,155 +1624,6 @@ def execute_ai(command):
             click.echo(f"❌ AI 명령 실행 실패: {e}")
     
     asyncio.run(run_ai_command())
-
-
-# MCP 관련 명령어 그룹
-@cli.group()
-def tools():
-    """MCP 도구 관리 명령어"""
-    pass
-
-
-@tools.command()
-def list():
-    """등록된 도구 목록을 표시합니다."""
-    async def list_tools():
-        try:
-            from src.mcp.registry import ToolRegistry
-            from pathlib import Path
-            
-            registry = ToolRegistry()
-            
-            # 도구 자동 발견
-            tools_dir = Path(__file__).parent.parent / "mcp" / "example_tools"
-            if tools_dir.exists():
-                package_path = "src.mcp.example_tools"
-                await registry.discover_tools(package_path)
-            
-            tools = registry.list_tools()
-            
-            if not tools:
-                click.echo("📭 등록된 도구가 없습니다.")
-                return
-            
-            click.echo(f"📋 등록된 도구 목록 ({len(tools)}개):")
-            for tool_name in tools:
-                metadata = registry.get_tool_metadata(tool_name)
-                if metadata:
-                    click.echo(f"   🔧 {metadata.name}")
-                    click.echo(f"      설명: {metadata.description}")
-                    click.echo(f"      버전: {metadata.version}")
-                    click.echo(f"      카테고리: {metadata.category.value}")
-                    click.echo(f"      매개변수: {len(metadata.parameters)}개")
-                    click.echo("")
-                else:
-                    click.echo(f"   🔧 {tool_name} (메타데이터 없음)")
-                    click.echo("")
-                
-        except Exception as e:
-            click.echo(f"❌ 도구 목록 조회 실패: {e}")
-    
-    asyncio.run(list_tools())
-
-
-@tools.command()
-def discover():
-    """새로운 도구를 자동으로 발견하고 등록합니다."""
-    async def discover_tools():
-        try:
-            from src.mcp.registry import ToolRegistry
-            from pathlib import Path
-            
-            registry = ToolRegistry()
-            tools_dir = Path(__file__).parent.parent / "mcp" / "example_tools"
-            
-            if not tools_dir.exists():
-                click.echo(f"❌ 도구 디렉토리가 없습니다: {tools_dir}")
-                return
-            
-            click.echo(f"🔍 도구 발견 중... ({tools_dir})")
-            # 패키지 경로로 변환
-            package_path = "src.mcp.example_tools"
-            discovered_count = await registry.discover_tools(package_path)
-            
-            if discovered_count > 0:
-                click.echo(f"✅ {discovered_count}개의 도구를 발견했습니다.")
-                # 발견된 도구 목록 표시
-                tools = registry.list_tools()
-                for tool_name in tools:
-                    click.echo(f"   🔧 {tool_name}")
-            else:
-                click.echo("📭 발견된 도구가 없습니다.")
-                
-        except Exception as e:
-            click.echo(f"❌ 도구 발견 실패: {e}")
-    
-    asyncio.run(discover_tools())
-
-
-@tools.command()
-@click.argument('tool_name')
-@click.argument('parameters', required=False)
-def run(tool_name, parameters):
-    """특정 도구를 실행합니다."""
-    async def run_tool():
-        try:
-            import json
-            from src.mcp.registry import ToolRegistry
-            from src.mcp.executor import ToolExecutor
-            
-            # 매개변수 파싱
-            params = {}
-            if parameters:
-                try:
-                    params = json.loads(parameters)
-                except json.JSONDecodeError:
-                    click.echo(f"❌ 잘못된 JSON 형식: {parameters}")
-                    return
-            
-            registry = ToolRegistry()
-            executor = ToolExecutor(registry)
-            
-            # 도구 자동 발견
-            from pathlib import Path
-            tools_dir = Path(__file__).parent.parent / "mcp" / "example_tools"
-            if tools_dir.exists():
-                package_path = "src.mcp.example_tools"
-                await registry.discover_tools(package_path)
-            
-            click.echo(f"🔧 도구 실행: {tool_name}")
-            click.echo(f"📝 매개변수: {params}")
-            
-            execution_result = await executor.execute_tool(tool_name, params)
-            
-            if execution_result.result.is_success:
-                click.echo(f"✅ 실행 성공:")
-                click.echo(f"   결과: {execution_result.result.data}")
-                click.echo(f"   실행 시간: {execution_result.result.execution_time:.3f}초")
-            else:
-                click.echo(f"❌ 실행 실패:")
-                click.echo(f"   오류: {execution_result.result.error_message}")
-                
-        except Exception as e:
-            click.echo(f"❌ 도구 실행 실패: {e}")
-    
-    asyncio.run(run_tool())
-
-
-@tools.command()
-def test_integration():
-    """MCP 통합 시스템을 테스트합니다."""
-    async def test_mcp_integration():
-        try:
-            from src.mcp.mcp_integration import run_integration_test
-            await run_integration_test()
-            
-        except Exception as e:
-            click.echo(f"❌ 통합 테스트 실패: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    asyncio.run(test_mcp_integration())
 
 
 @cli.group()
@@ -1867,6 +1709,7 @@ def create_event(database_id, title, date, description):
         try:
             from src.tools.notion import CalendarTool
             from src.config import get_settings
+            from src.mcp.base_tool import ExecutionStatus
             
             settings = get_settings()
             
@@ -2182,8 +2025,9 @@ def update_todo(id, title, description, priority, due_date):
             
             if result.status == ExecutionStatus.SUCCESS:
                 click.echo("✅ Todo가 성공적으로 수정되었습니다!")
-                click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
-                click.echo(f"   수정된 필드: {', '.join(result.data.get('updated_fields', []))}")
+                if result.data:
+                    click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
+                    click.echo(f"   수정된 필드: {', '.join(result.data.get('updated_fields', []))}")
             else:
                 click.echo(f"❌ Todo 수정 실패: {result.error_message}")
                 
@@ -2222,8 +2066,9 @@ def complete_todo(id, completed):
             
             if result.status == ExecutionStatus.SUCCESS:
                 click.echo(f"✅ Todo {action_text}가 완료되었습니다!")
-                click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
-                click.echo(f"   상태: {result.data.get('status', 'Unknown')}")
+                if result.data:
+                    click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
+                    click.echo(f"   상태: {result.data.get('status', 'Unknown')}")
             else:
                 click.echo(f"❌ Todo {action_text} 실패: {result.error_message}")
                 
@@ -2264,7 +2109,8 @@ def delete_todo(id, confirm):
             
             if result.status == ExecutionStatus.SUCCESS:
                 click.echo("✅ Todo가 성공적으로 삭제되었습니다!")
-                click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
+                if result.data:
+                    click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
             else:
                 click.echo(f"❌ Todo 삭제 실패: {result.error_message}")
                 
