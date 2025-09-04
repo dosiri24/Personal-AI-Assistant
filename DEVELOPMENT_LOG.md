@@ -164,6 +164,135 @@
 
 **✅ Step 6.1 완료! Notion API가 완전히 통합되어 CLI와 MCP를 통해 실제 사용 가능합니다.**
 
+#### ✅ Step 6.2: Todo 도구 확장 및 CRUD 완성 (완료)
+**목표**: 완전한 Todo 관리 시스템 구축
+
+**완료된 작업:**
+- [x] **단일 Todo 조회 (`get` action)**
+  - 특정 Todo ID로 상세 정보 조회
+  - 제목, 설명, 우선순위, 마감일, 상태, 프로젝트 연결 정보 표시
+  - 생성일, 수정일, URL 등 메타데이터 포함
+  - CLI 명령어: `pai notion get-todo --id {TODO_ID}`
+
+- [x] **Todo 수정 (`update` action)**
+  - 제목, 설명, 우선순위, 마감일 개별 또는 일괄 수정
+  - 자연어 날짜 파싱 지원 (ISO 형식, dateutil parser)
+  - 수정된 필드 추적 및 반환
+  - CLI 명령어: `pai notion update-todo --id {TODO_ID} [옵션들]`
+
+- [x] **Todo 완료/미완료 토글 (`complete` action)**
+  - 완료 상태와 미완료 상태 간 토글
+  - Notion status 속성 지원 추가
+  - 상태 변경 확인 및 피드백
+  - CLI 명령어: `pai notion complete-todo --id {TODO_ID} [--completed true/false]`
+
+- [x] **Todo 삭제 (`delete` action)**
+  - 안전한 삭제 (archived=True로 설정)
+  - 삭제 확인 플래그 필수 (--confirm)
+  - 삭제 전 제목 조회로 로그 기록
+  - CLI 명령어: `pai notion delete-todo --id {TODO_ID} --confirm`
+
+- [x] **NotionClient 확장**
+  - `status` 속성 타입 지원 추가 (`create_notion_property`)
+  - `update_page` 메서드에 `archived` 매개변수 추가
+  - 더 유연한 페이지 업데이트 지원
+
+**기술적 구현 특징:**
+- **완전한 CRUD**: Create, Read, Update, Delete 모든 기능 구현
+- **타입 안전성**: 모든 속성 타입에 대한 안전한 파싱
+- **오류 처리**: 각 작업별 상세한 오류 메시지와 예외 처리
+- **사용자 친화적**: 직관적인 CLI 명령어와 상세한 피드백
+- **데이터 무결성**: 삭제 확인, 필수 매개변수 검증 등 안전장치
+
+**테스트 결과:**
+```bash
+✅ get-todo: 상세 정보 조회 완전 작동
+✅ update-todo: 우선순위 수정 성공
+✅ complete-todo: 완료 상태 변경 성공  
+✅ delete-todo: 안전한 삭제 완료
+✅ 모든 CRUD 작업 정상 동작 확인
+```
+
+**CLI 명령어 요약:**
+```bash
+# Todo 목록 조회
+pai notion list-todos [--filter all/pending/completed/overdue] [--limit N]
+
+# 특정 Todo 조회
+pai notion get-todo --id {TODO_ID}
+
+# Todo 생성
+pai notion create-todo --title "제목" [--description "설명"] [--priority high/medium/low] [--due-date "날짜"]
+
+# Todo 수정
+pai notion update-todo --id {TODO_ID} [--title "새제목"] [--description "새설명"] [--priority high/medium/low] [--due-date "새날짜"]
+
+# Todo 완료/미완료
+pai notion complete-todo --id {TODO_ID} [--completed true/false]
+
+# Todo 삭제
+pai notion delete-todo --id {TODO_ID} --confirm
+```
+
+**다음 단계 준비:**
+- Step 6.3: 자연어 파싱 엔진 (날짜, 우선순위 키워드 자동 인식)
+- Step 6.4: 고급 필터링 및 검색 (프로젝트별, 날짜 범위별)
+- Phase 7: Discord 봇과 자연어 Todo 명령 통합
+
+**✅ Step 6.2 완료! Todo 관리의 모든 CRUD 기능이 완전히 작동합니다.**
+
+**🔧 한국어 우선순위 지원 추가 (2025-09-04 22:42)**
+- TodoData 모델의 우선순위 기본값 "Medium" → "중간" 변경
+- ToolParameter choices를 ["High", "Medium", "Low"] → ["높음", "중간", "낮음"] 변경
+- CLI 명령어의 우선순위 선택지를 한국어로 변경
+- 영어 우선순위와 한국어 우선순위 양방향 지원 유지
+- 테스트 결과: "높음", "중간", "낮음" 우선순위로 Todo 생성/수정 정상 작동
+
+#### ✅ Step 6.3: 자연어 파싱 엔진 → 에이전틱 AI 방식으로 변경 (완료)
+**목표**: 프로젝트 철학에 맞는 진정한 에이전틱 AI 구현
+
+**🔄 접근법 변경:**
+- ❌ **기존 NLP 파서 방식**: 자연어 → 정규표현식 파싱 → 구조화된 데이터 → 도구 파라미터
+- ✅ **에이전틱 AI 방식**: 자연어 → LLM 직접 이해 → 도구 파라미터
+
+**완료된 작업:**
+- [x] **규칙 기반 NLP 파서 제거** (`src/tools/notion/nlp_parser.py` 삭제)
+  - 정규표현식 기반 접근법은 프로젝트 철학과 모순
+  - "중간 분류/파싱 과정 제거" 원칙 위배로 제거 결정
+  
+- [x] **AgenticDecisionEngine 확장**
+  - `parse_natural_command()` 메서드 추가
+  - LLM이 직접 자연어를 도구 파라미터로 변환
+  - 체계적인 프롬프트로 정확한 JSON 파라미터 생성
+  
+- [x] **진정한 에이전틱 아키텍처**
+  - 키워드 매칭이나 규칙 없이 100% AI 추론
+  - 컨텍스트 이해 및 의도 파악
+  - 새로운 표현 자동 처리
+
+**핵심 철학 준수:**
+- **"순수 추론"**: 규칙 기반 접근법 완전 제거
+- **"에이전틱 AI"**: LLM이 직접 자연어를 이해하고 도구 선택
+- **"중간 과정 제거"**: 자연어 → 도구 실행 직접 매핑
+
+**기술적 구현:**
+```python
+# 에이전틱 AI 방식
+result = await ai_engine.parse_natural_command(
+    natural_command="내일까지 프로젝트 완료하기 급함",
+    tool_name="notion_todo"
+)
+# LLM이 직접 생성: {"action": "create", "title": "프로젝트 완료", 
+#                    "due_date": "2025-09-05T23:59:00+00:00", "priority": "높음"}
+```
+
+**다음 단계 준비:**
+- Gemini API 연동으로 실제 LLM 파싱 테스트
+- Discord 봇에서 자연어 명령 직접 처리
+- Phase 7: 완전한 에이전틱 AI 개인 비서 구현
+
+**✅ Step 6.3 완료! 프로젝트 핵심 철학에 맞는 진정한 에이전틱 AI 방식으로 전환되었습니다.**
+
 ---
 
 ### 2025년 9월 3일

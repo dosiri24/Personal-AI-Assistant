@@ -324,15 +324,24 @@ class NotionClient:
     async def update_page(
         self,
         page_id: str,
-        properties: Dict[str, Any]
+        properties: Optional[Dict[str, Any]] = None,
+        archived: Optional[bool] = None
     ) -> Dict[str, Any]:
         """페이지 속성 업데이트"""
         try:
             logger.info(f"페이지 업데이트: {page_id}")
+            
+            update_params: Dict[str, Any] = {"page_id": page_id}
+            
+            if properties is not None:
+                update_params["properties"] = properties
+                
+            if archived is not None:
+                update_params["archived"] = archived
+            
             result = await self._execute_with_retry(
                 self.client.pages.update,
-                page_id=page_id,
-                properties=properties
+                **update_params
             )
             return result if result is not None else {}
         except Exception as e:
@@ -519,6 +528,12 @@ def create_notion_property(property_type: str, value: Any) -> Dict[str, Any]:
     elif property_type == "checkbox":
         return {
             "checkbox": bool(value)
+        }
+    elif property_type == "status":
+        return {
+            "status": {
+                "name": str(value)
+            } if value else None
         }
     else:
         raise NotionError(f"지원되지 않는 속성 타입: {property_type}")

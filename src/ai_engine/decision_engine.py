@@ -342,6 +342,101 @@ class AgenticDecisionEngine:
     def get_available_tools(self) -> List[Tool]:
         """사용 가능한 도구 목록을 반환합니다"""
         return list(self.available_tools.values())
+        
+    async def parse_natural_command(self, 
+                                  natural_command: str, 
+                                  tool_name: str,
+                                  current_date: Optional[str] = None) -> Dict[str, Any]:
+        """
+        자연어 명령을 직접 도구 파라미터로 변환 (에이전틱 AI 방식)
+        
+        Args:
+            natural_command: 자연어 명령 (예: "내일까지 프로젝트 완료하기 급함")
+            tool_name: 대상 도구 이름 (예: "notion_todo")
+            current_date: 현재 날짜 (ISO 형식)
+            
+        Returns:
+            Dict[str, Any]: 도구 실행을 위한 파라미터
+        """
+        self.logger.info(f"자연어 명령 파싱: '{natural_command}' → {tool_name}")
+        
+        if current_date is None:
+            current_date = datetime.now().isoformat()
+            
+        # 도구 정보 가져오기
+        if tool_name not in self.available_tools:
+            raise ValueError(f"알 수 없는 도구: {tool_name}")
+            
+        tool = self.available_tools[tool_name]
+        
+        # LLM이 직접 자연어를 파라미터로 변환하는 프롬프트
+        system_prompt = f"""당신은 자연어 명령을 {tool.name} 도구의 파라미터로 변환하는 AI입니다.
+
+도구 정보:
+- 이름: {tool.name}
+- 설명: {tool.description}
+- 기능: {', '.join(tool.capabilities)}
+- 필수 파라미터: {', '.join(tool.required_params)}
+- 선택적 파라미터: {', '.join(tool.optional_params)}
+
+현재 날짜: {current_date}
+
+자연어 명령을 분석하여 정확한 JSON 파라미터를 생성하세요.
+
+중요한 규칙:
+1. 날짜/시간 표현을 ISO 형식으로 변환 (예: "내일" → "2025-09-05T23:59:00+00:00")
+2. 한국어 우선순위를 정확히 매핑 (급한/중요한 → "높음", 보통 → "중간", 천천히/나중에 → "낮음")
+3. action 선택 가이드라인:
+   - "~하기", "~작업", "~추가" → "create" (새로운 할일 생성)
+   - "~완료", "완료했어" (기존 할일 ID 있음) → "complete" (기존 할일 완료)
+   - "~수정", "~변경" → "update"
+   - "~삭제", "~제거" → "delete"
+   - "목록", "리스트" → "list"
+   - "조회", "확인" → "get"
+4. 제목에서 날짜/우선순위 키워드 제거하여 깔끔하게 정리
+5. "완료하기"는 새로운 할일을 만드는 것이므로 반드시 "create" action 사용
+
+응답은 반드시 유효한 JSON 형식으로만 답하세요."""
+
+        user_prompt = f"자연어 명령: '{natural_command}'"
+        
+        try:
+            # LLM에게 직접 파라미터 생성 요청
+            messages = [
+                ChatMessage(role="system", content=system_prompt),
+                ChatMessage(role="user", content=user_prompt)
+            ]
+            
+            response = await self.llm_provider.generate_response(
+                messages=messages,
+                temperature=0.1,  # 정확성을 위해 낮은 온도
+                max_tokens=1000
+            )
+            
+            # JSON 파싱
+            content = response.content.strip()
+            
+            # JSON 블록에서 추출 (```json 감싸진 경우 처리)
+            if "```json" in content:
+                json_start = content.find("```json") + 7
+                json_end = content.find("```", json_start)
+                content = content[json_start:json_end].strip()
+            elif "```" in content:
+                json_start = content.find("```") + 3
+                json_end = content.find("```", json_start)
+                content = content[json_start:json_end].strip()
+                
+            parameters = json.loads(content)
+            
+            self.logger.info(f"LLM 파라미터 생성 완료: {parameters}")
+            return parameters
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON 파싱 오류: {e}, 응답: {response.content}")
+            raise ValueError(f"LLM 응답을 JSON으로 파싱할 수 없습니다: {response.content}")
+        except Exception as e:
+            self.logger.error(f"자연어 파싱 실패: {e}")
+            raise
 
 
 # 기존 DecisionEngine과의 호환성을 위한 별칭

@@ -23,7 +23,7 @@ class TodoData(BaseModel):
     title: str = Field(..., description="할일 제목")
     description: Optional[str] = Field(None, description="할일 설명")
     due_date: Optional[datetime] = Field(None, description="마감일")
-    priority: Optional[str] = Field("Medium", description="우선순위 (High, Medium, Low)")
+    priority: Optional[str] = Field("중간", description="우선순위 (높음, 중간, 낮음)")
     category: Optional[str] = Field("Personal", description="카테고리")
     tags: Optional[List[str]] = Field(None, description="태그 목록")
     status: str = Field("Not Started", description="상태")
@@ -91,7 +91,7 @@ class TodoTool(BaseTool):
                 type=ParameterType.STRING,
                 description="우선순위",
                 required=False,
-                choices=["High", "Medium", "Low"]
+                choices=["높음", "중간", "낮음"]
             ),
             ToolParameter(
                 name="category",
@@ -222,7 +222,7 @@ class TodoTool(BaseTool):
                 title=title,
                 description=params.get("description"),
                 due_date=due_date,
-                priority=params.get("priority", "Medium"),
+                priority=params.get("priority", "중간"),
                 category=params.get("category", "Personal"),
                 tags=params.get("tags"),
                 status=params.get("status", "Not Started"),
@@ -430,6 +430,292 @@ class TodoTool(BaseTool):
                 error_message=f"할일 목록 조회 중 오류 발생: {e}"
             )
     
+    async def _get_todo(self, params: Dict[str, Any]) -> ToolResult:
+        """단일 할일 조회"""
+        try:
+            todo_id = params.get("todo_id") or params.get("id")
+            if not todo_id:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message="조회할 할일 ID가 필요합니다"
+                )
+            
+            # 페이지 정보 조회
+            page_info = await self.notion_client.get_page(todo_id)
+            properties = page_info.get("properties", {})
+            
+            # 할일 정보 추출
+            title = ""
+            if "작업명" in properties and properties["작업명"].get("title"):
+                title_list = properties["작업명"]["title"]
+                if title_list and len(title_list) > 0 and title_list[0].get("text"):
+                    title = title_list[0]["text"]["content"]
+            
+            description = ""
+            if "작업설명" in properties and properties["작업설명"].get("rich_text"):
+                rich_text_list = properties["작업설명"]["rich_text"]
+                if rich_text_list and len(rich_text_list) > 0 and rich_text_list[0].get("text"):
+                    description = rich_text_list[0]["text"]["content"]
+            
+            due_date = ""
+            if "마감일" in properties and properties["마감일"].get("date"):
+                due_date = properties["마감일"]["date"]["start"]
+            
+            priority = ""
+            if "우선순위" in properties and properties["우선순위"].get("select"):
+                priority = properties["우선순위"]["select"]["name"]
+            
+            status = ""
+            completed = False
+            if "작업상태" in properties and properties["작업상태"].get("status"):
+                status = properties["작업상태"]["status"]["name"]
+                completed = status == "완료"
+            
+            # 프로젝트 정보 추출
+            projects = []
+            if "경험/프로젝트" in properties and properties["경험/프로젝트"].get("relation"):
+                relations = properties["경험/프로젝트"]["relation"]
+                for relation in relations:
+                    relation_id = relation.get("id")
+                    if relation_id:
+                        try:
+                            project_page = await self.notion_client.get_page(relation_id)
+                            project_props = project_page.get("properties", {})
+                            
+                            project_title = ""
+                            for prop_name, prop_data in project_props.items():
+                                if prop_data.get("type") == "title":
+                                    title_list = prop_data.get("title", [])
+                                    if title_list and len(title_list) > 0 and title_list[0].get("text"):
+                                        project_title = title_list[0]["text"]["content"]
+                                    break
+                            
+                            if project_title:
+                                projects.append(project_title)
+                        except Exception as e:
+                            logger.warning(f"프로젝트 정보 조회 실패 ({relation_id}): {e}")
+            
+            todo_data = {
+                "id": todo_id,
+                "title": title,
+                "description": description,
+                "due_date": due_date,
+                "priority": priority,
+                "status": status,
+                "completed": completed,
+                "projects": projects,
+                "url": page_info.get("url", ""),
+                "created_time": page_info.get("created_time", ""),
+                "last_edited_time": page_info.get("last_edited_time", "")
+            }
+            
+            logger.info(f"할일 조회 완료: {title} (ID: {todo_id[:8]}...)")
+            
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "todo": todo_data,
+                    "message": f"할일 '{title}' 조회가 완료되었습니다"
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"할일 조회 실패: {e}")
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"할일 조회 중 오류 발생: {e}"
+            )
+    
+    async def _complete_todo(self, params: Dict[str, Any]) -> ToolResult:
+        """할일 완료 처리"""
+        try:
+            todo_id = params.get("todo_id") or params.get("id")
+            if not todo_id:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message="완료 처리할 할일 ID가 필요합니다"
+                )
+            
+            # 완료 상태 설정 (기본값: 완료)
+            completed = params.get("completed", True)
+            if isinstance(completed, str):
+                completed = completed.lower() in ["true", "1", "yes", "완료"]
+            
+            # 상태 업데이트할 속성 구성
+            status_name = "완료" if completed else "진행 중"
+            
+            properties = {
+                "작업상태": create_notion_property("status", status_name)
+            }
+            
+            # 페이지 업데이트
+            await self.notion_client.update_page(todo_id, properties=properties)
+            
+            # 업데이트된 할일 정보 조회
+            updated_page = await self.notion_client.get_page(todo_id)
+            title = ""
+            if "작업명" in updated_page.get("properties", {}):
+                title_prop = updated_page["properties"]["작업명"]
+                if title_prop.get("title"):
+                    title_list = title_prop["title"]
+                    if title_list and len(title_list) > 0 and title_list[0].get("text"):
+                        title = title_list[0]["text"]["content"]
+            
+            action_text = "완료 처리" if completed else "미완료로 변경"
+            logger.info(f"할일 {action_text} 완료: {title} (ID: {todo_id[:8]}...)")
+            
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "todo_id": todo_id,
+                    "title": title,
+                    "completed": completed,
+                    "status": status_name,
+                    "message": f"할일 '{title}'이(가) {action_text}되었습니다"
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"할일 완료 처리 실패: {e}")
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"할일 완료 처리 중 오류 발생: {e}"
+            )
+    
+    async def _update_todo(self, params: Dict[str, Any]) -> ToolResult:
+        """할일 수정"""
+        try:
+            todo_id = params.get("todo_id") or params.get("id")
+            if not todo_id:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message="수정할 할일 ID가 필요합니다"
+                )
+            
+            # 업데이트할 속성들 구성
+            properties = {}
+            
+            # 제목 업데이트
+            if "title" in params:
+                properties["작업명"] = create_notion_property("title", params["title"])
+            
+            # 설명 업데이트
+            if "description" in params:
+                properties["작업설명"] = create_notion_property("rich_text", params["description"])
+            
+            # 우선순위 업데이트
+            if "priority" in params:
+                priority_map = {"high": "높음", "medium": "중간", "low": "낮음"}
+                priority_korean = priority_map.get(params["priority"].lower(), params["priority"])
+                properties["우선순위"] = create_notion_property("select", priority_korean)
+            
+            # 마감일 업데이트
+            if "due_date" in params:
+                if params["due_date"]:
+                    # 날짜 문자열 파싱
+                    try:
+                        if isinstance(params["due_date"], str):
+                            # ISO 형식 시도
+                            try:
+                                due_date = datetime.fromisoformat(params["due_date"].replace('Z', '+00:00'))
+                            except:
+                                # 다른 형식들 시도
+                                from dateutil import parser
+                                due_date = parser.parse(params["due_date"])
+                        else:
+                            due_date = params["due_date"]
+                        
+                        properties["마감일"] = create_notion_property("date", due_date.isoformat())
+                    except Exception as e:
+                        logger.warning(f"날짜 파싱 실패: {e}, 원본값 사용")
+                        properties["마감일"] = create_notion_property("date", str(params["due_date"]))
+                else:
+                    # 마감일 제거
+                    properties["마감일"] = create_notion_property("date", None)
+            
+            if not properties:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message="업데이트할 내용이 없습니다. title, description, priority, due_date 중 하나 이상을 지정해주세요"
+                )
+            
+            # 페이지 업데이트
+            await self.notion_client.update_page(todo_id, properties=properties)
+            
+            # 업데이트된 할일 정보 조회
+            updated_page = await self.notion_client.get_page(todo_id)
+            title = ""
+            if "작업명" in updated_page.get("properties", {}):
+                title_prop = updated_page["properties"]["작업명"]
+                if title_prop.get("title"):
+                    title_list = title_prop["title"]
+                    if title_list and len(title_list) > 0 and title_list[0].get("text"):
+                        title = title_list[0]["text"]["content"]
+            
+            updated_fields = list(properties.keys())
+            logger.info(f"할일 수정 완료: {title} (ID: {todo_id[:8]}...), 수정된 필드: {updated_fields}")
+            
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "todo_id": todo_id,
+                    "title": title,
+                    "updated_fields": updated_fields,
+                    "message": f"할일 '{title}'이(가) 성공적으로 수정되었습니다"
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"할일 수정 실패: {e}")
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"할일 수정 중 오류 발생: {e}"
+            )
+    
+    async def _delete_todo(self, params: Dict[str, Any]) -> ToolResult:
+        """할일 삭제"""
+        try:
+            todo_id = params.get("todo_id") or params.get("id")
+            if not todo_id:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message="삭제할 할일 ID가 필요합니다"
+                )
+            
+            # 삭제 전 할일 정보 조회 (로그용)
+            try:
+                page_info = await self.notion_client.get_page(todo_id)
+                title = ""
+                if "작업명" in page_info.get("properties", {}):
+                    title_prop = page_info["properties"]["작업명"]
+                    if title_prop.get("title"):
+                        title_list = title_prop["title"]
+                        if title_list and len(title_list) > 0 and title_list[0].get("text"):
+                            title = title_list[0]["text"]["content"]
+            except:
+                title = "Unknown"
+            
+            # 페이지 삭제 (archived=True로 설정)
+            await self.notion_client.update_page(todo_id, archived=True)
+            
+            logger.info(f"할일 삭제 완료: {title} (ID: {todo_id[:8]}...)")
+            
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "todo_id": todo_id,
+                    "title": title,
+                    "message": f"할일 '{title}'이(가) 성공적으로 삭제되었습니다"
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"할일 삭제 실패: {e}")
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"할일 삭제 중 오류 발생: {e}"
+            )
+    
     async def execute(self, **params) -> ToolResult:
         """도구 실행"""
         try:
@@ -448,25 +734,13 @@ class TodoTool(BaseTool):
             elif action == "list":
                 return await self._list_todos(params)
             elif action == "get":
-                return ToolResult(
-                    status=ExecutionStatus.ERROR,
-                    error_message="단일 할일 조회 기능은 아직 구현되지 않았습니다"
-                )
+                return await self._get_todo(params)
             elif action == "update":
-                return ToolResult(
-                    status=ExecutionStatus.ERROR,
-                    error_message="할일 수정 기능은 아직 구현되지 않았습니다"
-                )
+                return await self._update_todo(params)
             elif action == "delete":
-                return ToolResult(
-                    status=ExecutionStatus.ERROR,
-                    error_message="할일 삭제 기능은 아직 구현되지 않았습니다"
-                )
+                return await self._delete_todo(params)
             elif action == "complete":
-                return ToolResult(
-                    status=ExecutionStatus.ERROR,
-                    error_message="할일 완료 처리 기능은 아직 구현되지 않았습니다"
-                )
+                return await self._complete_todo(params)
             else:
                 return ToolResult(
                     status=ExecutionStatus.ERROR,

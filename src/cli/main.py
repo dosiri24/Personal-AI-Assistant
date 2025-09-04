@@ -1964,7 +1964,7 @@ def list_events(database_id, limit):
 @click.option('--database-id', help='Todo 데이터베이스 ID')
 @click.option('--title', required=True, help='할일 제목')
 @click.option('--description', help='할일 설명')
-@click.option('--priority', type=click.Choice(['low', 'medium', 'high']), default='medium', help='우선순위')
+@click.option('--priority', type=click.Choice(['낮음', '중간', '높음']), default='중간', help='우선순위')
 @click.option('--due-date', help='마감일 (예: "2024-01-15" 또는 "next week")')
 def create_todo(database_id, title, description, priority, due_date):
     """Notion Todo에 새 할일을 생성합니다."""
@@ -2083,6 +2083,197 @@ def list_todos(database_id, filter, limit):
             traceback.print_exc()
     
     asyncio.run(list_todo_items())
+
+
+@notion.command()
+@click.option('--id', required=True, help='조회할 Todo ID')
+def get_todo(id):
+    """특정 Todo의 상세 정보를 조회합니다."""
+    async def get_todo_item():
+        try:
+            from src.tools.notion import TodoTool
+            from src.mcp.base_tool import ExecutionStatus
+            from src.config import get_settings
+            
+            settings = get_settings()
+            todo_tool = TodoTool(settings=settings)
+            
+            params = {
+                'action': 'get',
+                'todo_id': id
+            }
+            
+            click.echo(f"📋 Todo 조회 중 (ID: {id[:8]}...)...")
+            
+            result = await todo_tool.execute(**params)
+            
+            if result.status == ExecutionStatus.SUCCESS and result.data:
+                todo = result.data.get('todo', {})
+                status_icon = "✅" if todo.get('completed') else "⏳"
+                priority_icons = {'낮음': '🟢', '중간': '🟡', '높음': '🔴'}
+                priority_icon = priority_icons.get(todo.get('priority', '중간'), '🟡')
+                
+                click.echo(f"\n{status_icon} {todo.get('title', '제목 없음')}")
+                click.echo(f"   {priority_icon} 우선순위: {todo.get('priority', '중간')}")
+                click.echo(f"   📅 상태: {todo.get('status', '알 수 없음')}")
+                
+                if todo.get('due_date'):
+                    click.echo(f"   ⏰ 마감일: {todo.get('due_date')}")
+                if todo.get('description'):
+                    click.echo(f"   📝 설명: {todo.get('description')}")
+                if todo.get('projects'):
+                    projects_text = ", ".join(todo['projects'])
+                    click.echo(f"   🏗️ 프로젝트: {projects_text}")
+                
+                click.echo(f"   🆔 ID: {todo.get('id', 'Unknown')}")
+                click.echo(f"   🔗 URL: {todo.get('url', 'URL 없음')}")
+                click.echo(f"   📅 생성일: {todo.get('created_time', 'Unknown')}")
+                click.echo(f"   ✏️ 수정일: {todo.get('last_edited_time', 'Unknown')}")
+            else:
+                click.echo("❌ Todo 조회 실패:")
+                click.echo(f"   {result.error_message}")
+                
+        except Exception as e:
+            click.echo(f"❌ Todo 조회 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    asyncio.run(get_todo_item())
+
+
+@notion.command()
+@click.option('--id', required=True, help='수정할 Todo ID')
+@click.option('--title', help='새 제목')
+@click.option('--description', help='새 설명')
+@click.option('--priority', type=click.Choice(['높음', '중간', '낮음']), help='새 우선순위')
+@click.option('--due-date', help='새 마감일 (ISO 형식 또는 자연어)')
+def update_todo(id, title, description, priority, due_date):
+    """Todo를 수정합니다."""
+    async def update_todo_item():
+        try:
+            from src.tools.notion import TodoTool
+            from src.mcp.base_tool import ExecutionStatus
+            from src.config import get_settings
+            
+            settings = get_settings()
+            todo_tool = TodoTool(settings=settings)
+            
+            params = {
+                'action': 'update',
+                'todo_id': id
+            }
+            
+            if title:
+                params['title'] = title
+            if description:
+                params['description'] = description
+            if priority:
+                params['priority'] = priority
+            if due_date:
+                params['due_date'] = due_date
+            
+            if len(params) == 2:  # action과 todo_id만 있는 경우
+                click.echo("❌ 수정할 내용을 지정해주세요 (--title, --description, --priority, --due-date 중 하나 이상)")
+                return
+            
+            click.echo(f"✏️ Todo 수정 중 (ID: {id[:8]}...)...")
+            
+            result = await todo_tool.execute(**params)
+            
+            if result.status == ExecutionStatus.SUCCESS:
+                click.echo("✅ Todo가 성공적으로 수정되었습니다!")
+                click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
+                click.echo(f"   수정된 필드: {', '.join(result.data.get('updated_fields', []))}")
+            else:
+                click.echo(f"❌ Todo 수정 실패: {result.error_message}")
+                
+        except Exception as e:
+            click.echo(f"❌ Todo 수정 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    asyncio.run(update_todo_item())
+
+
+@notion.command()
+@click.option('--id', required=True, help='완료 처리할 Todo ID')
+@click.option('--completed', type=bool, default=True, help='완료 상태 (True: 완료, False: 미완료)')
+def complete_todo(id, completed):
+    """Todo의 완료 상태를 변경합니다."""
+    async def complete_todo_item():
+        try:
+            from src.tools.notion import TodoTool
+            from src.mcp.base_tool import ExecutionStatus
+            from src.config import get_settings
+            
+            settings = get_settings()
+            todo_tool = TodoTool(settings=settings)
+            
+            params = {
+                'action': 'complete',
+                'todo_id': id,
+                'completed': completed
+            }
+            
+            action_text = "완료 처리" if completed else "미완료로 변경"
+            click.echo(f"✅ Todo {action_text} 중 (ID: {id[:8]}...)...")
+            
+            result = await todo_tool.execute(**params)
+            
+            if result.status == ExecutionStatus.SUCCESS:
+                click.echo(f"✅ Todo {action_text}가 완료되었습니다!")
+                click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
+                click.echo(f"   상태: {result.data.get('status', 'Unknown')}")
+            else:
+                click.echo(f"❌ Todo {action_text} 실패: {result.error_message}")
+                
+        except Exception as e:
+            click.echo(f"❌ Todo {action_text} 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    asyncio.run(complete_todo_item())
+
+
+@notion.command()
+@click.option('--id', required=True, help='삭제할 Todo ID')
+@click.option('--confirm', is_flag=True, help='삭제 확인')
+def delete_todo(id, confirm):
+    """Todo를 삭제합니다."""
+    if not confirm:
+        click.echo("❌ 삭제하려면 --confirm 플래그를 사용해주세요")
+        return
+    
+    async def delete_todo_item():
+        try:
+            from src.tools.notion import TodoTool
+            from src.mcp.base_tool import ExecutionStatus
+            from src.config import get_settings
+            
+            settings = get_settings()
+            todo_tool = TodoTool(settings=settings)
+            
+            params = {
+                'action': 'delete',
+                'todo_id': id
+            }
+            
+            click.echo(f"🗑️ Todo 삭제 중 (ID: {id[:8]}...)...")
+            
+            result = await todo_tool.execute(**params)
+            
+            if result.status == ExecutionStatus.SUCCESS:
+                click.echo("✅ Todo가 성공적으로 삭제되었습니다!")
+                click.echo(f"   제목: {result.data.get('title', 'Unknown')}")
+            else:
+                click.echo(f"❌ Todo 삭제 실패: {result.error_message}")
+                
+        except Exception as e:
+            click.echo(f"❌ Todo 삭제 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    asyncio.run(delete_todo_item())
 
 
 if __name__ == "__main__":
