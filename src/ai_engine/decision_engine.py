@@ -237,6 +237,8 @@ class AgenticDecisionEngine:
     async def _parse_decision_response(self, response_content: str, context: DecisionContext) -> Decision:
         """LLM 응답을 파싱하여 Decision 객체로 변환합니다"""
         try:
+            self.logger.debug(f"LLM 응답 파싱 시작: {response_content[:200]}")
+            
             # JSON 응답 추출
             json_start = response_content.find('{')
             json_end = response_content.rfind('}') + 1
@@ -245,11 +247,16 @@ class AgenticDecisionEngine:
                 json_str = response_content[json_start:json_end]
                 parsed_response = json.loads(json_str)
                 
+                self.logger.debug(f"파싱된 응답: {parsed_response}")
+                
                 # Decision 객체 생성
                 confidence_score = parsed_response.get("confidence_score", 0.7)
+                selected_tools = parsed_response.get("selected_tools", [])
+                
+                self.logger.info(f"선택된 도구들: {selected_tools}, 신뢰도: {confidence_score}")
                 
                 return Decision(
-                    selected_tools=parsed_response.get("selected_tools", []),
+                    selected_tools=selected_tools,
                     execution_plan=parsed_response.get("execution_plan", []),
                     confidence_score=confidence_score,
                     confidence_level=self._get_confidence_level(confidence_score),

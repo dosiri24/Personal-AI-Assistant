@@ -273,13 +273,118 @@ class MockLLMProvider(LLMProvider):
         temperature: float = 0.7,
         **kwargs
     ) -> LLMResponse:
-        """Mock 응답 생성"""
+        """Mock 응답 생성 - 의사결정용 JSON 응답 포함"""
         await asyncio.sleep(0.1)  # 실제 API 호출 시뮬레이션
         
-        # 간단한 요약 응답 생성
         if messages:
-            last_message = messages[-1]
-            content = f"Mock AI 응답: '{last_message.content}'에 대한 테스트 응답입니다."
+            # 전체 메시지에서 실제 사용자 요청 추출
+            full_content = messages[-1].content
+            
+            # "사용자 요청:**" 부분 찾기
+            user_request_start = full_content.find('**사용자 요청:**\n"')
+            if user_request_start >= 0:
+                user_request_start += len('**사용자 요청:**\n"')
+                user_request_end = full_content.find('"', user_request_start)
+                if user_request_end > user_request_start:
+                    user_message = full_content[user_request_start:user_request_end]
+                else:
+                    user_message = full_content
+            else:
+                user_message = full_content
+            
+            user_message_lower = user_message.lower()
+            
+            # 계산 요청 감지
+            if any(word in user_message_lower for word in ['계산', '더하기', '빼기', '곱하기', '나누기', '+', '-', '*', '/', '얼마']):
+                # 숫자 추출 시도
+                import re
+                numbers = re.findall(r'\d+', user_message)
+                if len(numbers) >= 2:
+                    expression = f"{numbers[0]} + {numbers[1]}"
+                    if '더하기' in user_message_lower or '+' in user_message_lower:
+                        expression = f"{numbers[0]} + {numbers[1]}"
+                    elif '빼기' in user_message_lower or '-' in user_message_lower:
+                        expression = f"{numbers[0]} - {numbers[1]}"
+                    elif '곱하기' in user_message_lower or '*' in user_message_lower:
+                        expression = f"{numbers[0]} * {numbers[1]}"
+                    elif '나누기' in user_message_lower or '/' in user_message_lower:
+                        expression = f"{numbers[0]} / {numbers[1]}"
+                else:
+                    expression = "2 + 3"  # 기본값
+                
+                response = {
+                    "selected_tools": ["calculator"],
+                    "execution_plan": [
+                        {
+                            "tool": "calculator",
+                            "parameters": {"expression": expression},
+                            "reasoning": f"수학 계산 요청을 감지하여 계산기 도구를 선택했습니다: {expression}"
+                        }
+                    ],
+                    "confidence_score": 0.95,
+                    "confidence_level": "VERY_HIGH",
+                    "reasoning": f"사용자가 '{user_message}'라고 요청했으므로 계산기 도구를 사용하여 계산을 수행합니다.",
+                    "estimated_time": 1,
+                    "requires_user_input": False
+                }
+                content = f"```json\n{json.dumps(response, ensure_ascii=False, indent=2)}\n```"
+            
+            # 시간 요청 감지 (더 정확한 패턴)
+            elif any(word in user_message_lower for word in ['시간', '몇시', '지금', '현재']) and not any(word in user_message_lower for word in ['계산', '+', '-', '*', '/', '더하기']):
+                response = {
+                    "selected_tools": ["time_info"],
+                    "execution_plan": [
+                        {
+                            "tool": "time_info",
+                            "parameters": {"format": "datetime"},
+                            "reasoning": "현재 시간 정보 요청을 감지하여 시간 도구를 선택했습니다."
+                        }
+                    ],
+                    "confidence_score": 0.92,
+                    "confidence_level": "VERY_HIGH",
+                    "reasoning": f"사용자가 '{user_message}'라고 요청했으므로 시간 정보 도구를 사용합니다.",
+                    "estimated_time": 1,
+                    "requires_user_input": False
+                }
+                content = f"```json\n{json.dumps(response, ensure_ascii=False, indent=2)}\n```"
+            
+            # 텍스트 처리 요청 감지
+            elif any(word in user_message_lower for word in ['텍스트', '글자', '문자', '대문자', '소문자', '역순']):
+                response = {
+                    "selected_tools": ["text_processor"],
+                    "execution_plan": [
+                        {
+                            "tool": "text_processor",
+                            "parameters": {"text": "Hello World", "operation": "length"},
+                            "reasoning": "텍스트 처리 요청을 감지하여 텍스트 처리 도구를 선택했습니다."
+                        }
+                    ],
+                    "confidence_score": 0.88,
+                    "confidence_level": "HIGH",
+                    "reasoning": f"사용자가 '{user_message}'라고 요청했으므로 텍스트 처리 도구를 사용합니다.",
+                    "estimated_time": 1,
+                    "requires_user_input": False
+                }
+                content = f"```json\n{json.dumps(response, ensure_ascii=False, indent=2)}\n```"
+            
+            # 기타 요청 (낮은 신뢰도)
+            else:
+                response = {
+                    "selected_tools": ["web_search"],
+                    "execution_plan": [
+                        {
+                            "tool": "web_search",
+                            "parameters": {"query": user_message},
+                            "reasoning": "일반적인 정보 요청으로 판단하여 웹 검색 도구를 선택했습니다."
+                        }
+                    ],
+                    "confidence_score": 0.3,
+                    "confidence_level": "LOW",
+                    "reasoning": f"사용자 요청 '{user_message}'을 처리하기 위해 웹 검색을 제안합니다.",
+                    "estimated_time": 3,
+                    "requires_user_input": False
+                }
+                content = f"```json\n{json.dumps(response, ensure_ascii=False, indent=2)}\n```"
         else:
             content = "Mock AI 응답: 테스트용 기본 응답입니다."
         

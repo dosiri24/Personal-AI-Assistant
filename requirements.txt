@@ -38,6 +38,9 @@ pydantic-settings>=2.1.0
 # Async & File Operations
 aiofiles>=23.2.0
 
+# System Monitoring
+psutil>=5.9.0
+
 # Apple/macOS Integration
 applescript>=2021.2.9
 
