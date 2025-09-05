@@ -95,7 +95,7 @@ class GeminiProvider(LLMProvider):
     
     def __init__(self, config: Optional[Settings] = None):
         super().__init__(config)
-        self.model_name = "gemini-1.5-pro"
+        self.model_name = getattr(self.config, 'ai_model', 'gemini-2.5-pro')
         self.model = None
         
     async def initialize(self) -> bool:

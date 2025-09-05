@@ -13,7 +13,7 @@ from enum import Enum
 
 from loguru import logger
 
-from .llm_provider import LLMProviderManager, ChatMessage, LLMResponse
+from .llm_provider import LLMManager, ChatMessage, LLMResponse
 from .prompt_templates import PromptManager, PromptType, ContextAwarePromptManager
 from .prompt_optimizer import PromptOptimizer, MetricType
 from ..config import Settings
@@ -69,7 +69,7 @@ class NaturalLanguageProcessor:
     
     def __init__(self, config: Settings):
         self.config = config
-        self.llm_manager = LLMProviderManager(config)
+        self.llm_manager = LLMManager(config)
         self.prompt_manager = ContextAwarePromptManager()  # 컨텍스트 인식 프롬프트 매니저 사용
         self.prompt_optimizer = PromptOptimizer()  # A/B 테스트 시스템
         self.initialized = False
@@ -78,7 +78,7 @@ class NaturalLanguageProcessor:
         """자연어 처리기 초기화"""
         try:
             # LLM 프로바이더 초기화
-            if not await self.llm_manager.initialize_providers():
+            if not await self.llm_manager.initialize():
                 logger.error("LLM 프로바이더 초기화 실패")
                 return False
                 
@@ -118,7 +118,7 @@ class NaturalLanguageProcessor:
             )
             
             # AI 응답 생성
-            messages = [ChatMessage(role="user", content=prompt_text)]
+            messages = [{"role": "user", "content": prompt_text}]
             response = await self.llm_manager.generate_response(
                 messages, 
                 temperature=0.3  # 낮은 온도로 일관된 분석
@@ -328,7 +328,7 @@ class NaturalLanguageProcessor:
             )
             
             # AI 응답 생성
-            messages = [ChatMessage(role="user", content=prompt_text)]
+            messages = [{"role": "user", "content": prompt_text}]
             response = await self.llm_manager.generate_response(messages, temperature=0.7)
             
             # A/B 테스트 결과 기록 (변형이 있는 경우)
@@ -359,7 +359,7 @@ class NaturalLanguageProcessor:
             
             if analysis_result["status"] == "success":
                 # AI로 피드백 분석
-                messages = [ChatMessage(role="user", content=analysis_result["analysis_prompt"])]
+                messages = [{"role": "user", "content": analysis_result["analysis_prompt"]}]
                 response = await self.llm_manager.generate_response(messages, temperature=0.3)
                 
                 # 분석 결과 파싱
@@ -430,7 +430,7 @@ class NaturalLanguageProcessor:
             )
             
             # AI 응답 생성
-            messages = [ChatMessage(role="user", content=prompt_text)]
+            messages = [{"role": "user", "content": prompt_text}]
             response = await self.llm_manager.generate_response(messages, temperature=0.4)
             
             # 응답 파싱

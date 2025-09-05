@@ -1,21 +1,22 @@
 """
-CLI Commands Module
+CLI Commands Package
 
-이 모듈은 Personal AI Assistant의 모든 CLI 명령어들을 기능별로 분리하여 관리합니다.
+이 패키지는 CLI 명령어들을 기능별로 모듈화한 것입니다.
+각 모듈은 관련된 명령어들을 그룹화하여 관리합니다.
 """
 
-from .service_commands import register_service_commands
-from .test_commands import register_test_commands
-from .maintenance_commands import register_maintenance_commands
-from .ai_commands import register_ai_commands
-from .tools_commands import register_tools_commands
-from .notion_commands import register_notion_commands
+from .service import service_commands
+from .testing import testing_commands  
+from .monitoring import monitoring_commands
+from .tools import tools_group
+from .notion import notion_group
+from .optimization import optimization_commands
 
 __all__ = [
-    'register_service_commands',
-    'register_test_commands', 
-    'register_maintenance_commands',
-    'register_ai_commands',
-    'register_tools_commands',
-    'register_notion_commands'
+    'service_commands',
+    'testing_commands', 
+    'monitoring_commands',
+    'tools_group',
+    'notion_group',
+    'optimization_commands'
 ]
