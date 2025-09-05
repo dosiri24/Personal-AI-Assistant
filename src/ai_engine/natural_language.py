@@ -26,6 +26,7 @@ class IntentType(Enum):
     """의도 분류"""
     TASK_MANAGEMENT = "task_management"  # 할일/일정 관리
     INFORMATION_SEARCH = "information_search"  # 정보 검색
+    WEB_SCRAPING = "web_scraping"  # 웹 정보 수집
     SYSTEM_CONTROL = "system_control"  # 시스템 제어
     COMMUNICATION = "communication"  # 소통/메시지
     FILE_MANAGEMENT = "file_management"  # 파일 관리
