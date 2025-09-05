@@ -246,7 +246,7 @@ def create_todo(database_id, title, description, priority, due_date):
 @click.option('--database-id', help='Todo 데이터베이스 ID')
 @click.option('--filter', type=click.Choice(['all', 'pending', 'completed', 'overdue']), 
               default='all', help='필터 타입')
-@click.option('--limit', default=10, help='조회할 Todo 수 (기본값: 10)')
+@click.option('--limit', default=5, help='조회할 Todo 수 (기본값: 5)')
 def list_todos(database_id, filter, limit):
     """Notion Todo 목록을 조회합니다."""
     async def list_todo_items():

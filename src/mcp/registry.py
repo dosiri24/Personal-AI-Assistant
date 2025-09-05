@@ -346,7 +346,7 @@ class ToolRegistry:
     
     async def discover_tools(self, package_path: str) -> int:
         """
-        패키지에서 도구 자동 발견 및 등록
+        패키지에서 도구 자동 발견 및 등록 (재귀적 검색)
         
         Args:
             package_path: 도구가 있는 패키지 경로 (예: "src.tools")
@@ -359,14 +359,21 @@ class ToolRegistry:
         try:
             # 패키지 임포트
             package = importlib.import_module(package_path)
+            if package.__file__ is None:
+                logger.error(f"패키지 파일 경로를 찾을 수 없습니다: {package_path}")
+                return 0
+            
             package_dir = Path(package.__file__).parent
             
-            # 모든 .py 파일 검사
-            for py_file in package_dir.glob("*.py"):
+            # 재귀적으로 모든 .py 파일 검사
+            for py_file in package_dir.rglob("*.py"):
                 if py_file.name.startswith("__"):
                     continue
                 
-                module_name = f"{package_path}.{py_file.stem}"
+                # 상대 경로를 모듈 경로로 변환
+                relative_path = py_file.relative_to(package_dir)
+                module_parts = list(relative_path.parts[:-1]) + [relative_path.stem]
+                module_name = f"{package_path}.{'.'.join(module_parts)}"
                 
                 try:
                     module = importlib.import_module(module_name)
@@ -379,7 +386,7 @@ class ToolRegistry:
                             
                             if await self.register_tool(obj):
                                 discovered_count += 1
-                                logger.info(f"자동 발견된 도구: {obj.__name__}")
+                                logger.info(f"자동 발견된 도구: {obj.__name__} (모듈: {module_name})")
                 
                 except Exception as e:
                     logger.error(f"모듈 검사 실패: {module_name} - {e}")

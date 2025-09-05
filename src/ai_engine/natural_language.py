@@ -17,6 +17,9 @@ from .llm_provider import LLMManager, ChatMessage, LLMResponse
 from .prompt_templates import PromptManager, PromptType, ContextAwarePromptManager
 from .prompt_optimizer import PromptOptimizer, MetricType
 from ..config import Settings
+from ..mcp.registry import ToolRegistry
+from ..mcp.executor import ToolExecutor
+from ..mcp.base_tool import ExecutionStatus
 
 
 class IntentType(Enum):
@@ -72,6 +75,8 @@ class NaturalLanguageProcessor:
         self.llm_manager = LLMManager(config)
         self.prompt_manager = ContextAwarePromptManager()  # 컨텍스트 인식 프롬프트 매니저 사용
         self.prompt_optimizer = PromptOptimizer()  # A/B 테스트 시스템
+        self.tool_registry = ToolRegistry()  # MCP 도구 레지스트리
+        self.tool_executor = ToolExecutor()  # MCP 도구 실행기
         self.initialized = False
         
     async def initialize(self) -> bool:
@@ -81,6 +86,10 @@ class NaturalLanguageProcessor:
             if not await self.llm_manager.initialize():
                 logger.error("LLM 프로바이더 초기화 실패")
                 return False
+            
+            # MCP 도구 레지스트리 초기화
+            tool_count = await self.tool_registry.discover_tools("src.tools")
+            logger.info(f"도구 레지스트리 초기화 완료: {tool_count}개 도구 등록")
                 
             self.initialized = True
             logger.info("자연어 처리기 초기화 완료")
@@ -127,10 +136,15 @@ class NaturalLanguageProcessor:
             # 응답 파싱
             parsed_data = self._extract_json_from_response(response.content)
             
+            # Intent 분류 - AI 응답과 원본 메시지 모두 활용
+            ai_intent = parsed_data.get("intent", "")
+            combined_text = f"{ai_intent} {user_command}"  # AI 분석과 원본 메시지 결합
+            intent = self._classify_intent(combined_text)
+            
             # ParsedCommand 객체 생성
             return ParsedCommand(
                 original_text=user_command,
-                intent=self._classify_intent(parsed_data.get("intent", "")),
+                intent=intent,
                 confidence=parsed_data.get("confidence", 0.5),
                 entities=self._extract_entities(user_command, parsed_data),
                 urgency=self._determine_urgency(parsed_data),
@@ -225,11 +239,14 @@ class NaturalLanguageProcessor:
             return {}
             
     def _classify_intent(self, intent_text: str) -> IntentType:
-        """의도 분류"""
+        """의도 분류 - 원본 메시지도 함께 분석"""
         intent_lower = intent_text.lower()
         
-        if any(word in intent_lower for word in ["일정", "캘린더", "할일", "작업", "리마인더"]):
+        # Todo/작업 관련 키워드 확장
+        task_keywords = ["일정", "캘린더", "할일", "작업", "리마인더", "추가", "생성", "만들", "todo", "task", "notion"]
+        if any(word in intent_lower for word in task_keywords):
             return IntentType.TASK_MANAGEMENT
+            
         elif any(word in intent_lower for word in ["검색", "찾기", "정보", "알아보기"]):
             return IntentType.INFORMATION_SEARCH
         elif any(word in intent_lower for word in ["시스템", "설정", "제어", "실행"]):
@@ -297,6 +314,183 @@ class NaturalLanguageProcessor:
             entities["planned_actions"] = parsed_data["action_plan"]
             
         return entities
+    
+    async def execute_command(
+        self,
+        parsed_command: ParsedCommand,
+        user_id: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """파싱된 명령을 실제로 실행합니다"""
+        try:
+            # 신뢰도가 너무 낮으면 명확화 요청
+            if parsed_command.confidence < 0.7:
+                return {
+                    "status": "clarification_needed",
+                    "message": f"요청을 더 명확히 해주실 수 있나요? (신뢰도: {parsed_command.confidence:.2f})",
+                    "clarifications": parsed_command.clarification_needed
+                }
+            
+            # Todo 관련 작업 실행
+            if parsed_command.intent == IntentType.TASK_MANAGEMENT:
+                return await self._execute_todo_task(parsed_command, user_id, context)
+                
+            # 기타 작업들도 여기서 처리
+            elif parsed_command.intent == IntentType.INFORMATION_SEARCH:
+                return await self._execute_search_task(parsed_command, user_id, context)
+                
+            else:
+                return {
+                    "status": "not_implemented",
+                    "message": f"'{parsed_command.intent.value}' 타입의 작업은 아직 구현되지 않았습니다."
+                }
+                
+        except Exception as e:
+            logger.error(f"명령 실행 중 오류: {e}")
+            return {
+                "status": "error",
+                "message": f"명령 실행 중 오류가 발생했습니다: {str(e)}"
+            }
+    
+    async def _execute_todo_task(
+        self,
+        parsed_command: ParsedCommand,
+        user_id: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Todo 관련 작업 실행"""
+        try:
+            # Notion Todo 도구 찾기
+            todo_tool = await self.tool_registry.get_tool("notion_todo")
+            if not todo_tool:
+                return {
+                    "status": "error",
+                    "message": "Notion Todo 도구를 찾을 수 없습니다."
+                }
+            
+            # 자연어에서 Todo 파라미터 추출 (에이전틱 방식)
+            todo_params = await self._extract_todo_params(parsed_command)
+            
+            # Todo 생성 실행 - 표준 BaseTool 인터페이스 사용
+            try:
+                result = await todo_tool.execute({
+                    "action": "create",
+                    **todo_params
+                })
+                
+                if result.status == ExecutionStatus.SUCCESS:
+                    return {
+                        "status": "success",
+                        "message": f"✅ '{todo_params['title']}' 할일이 Notion에 추가되었습니다!",
+                        "result": result.data
+                    }
+                else:
+                    return {
+                        "status": "error", 
+                        "message": f"❌ Todo 생성 실패: {result.error_message or '알 수 없는 오류'}"
+                    }
+            except Exception as tool_error:
+                logger.error(f"도구 실행 중 오류: {tool_error}")
+                return {
+                    "status": "error",
+                    "message": f"❌ 도구 실행 실패: {str(tool_error)}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Todo 작업 실행 중 오류: {e}")
+            return {
+                "status": "error",
+                "message": f"Todo 작업 실행 중 오류: {str(e)}"
+            }
+    
+    async def _extract_todo_params(self, parsed_command: ParsedCommand) -> Dict[str, Any]:
+        """LLM을 사용하여 자연어에서 Todo 파라미터를 에이전틱하게 추출"""
+        try:
+            # 에이전틱 Todo 파라미터 추출 프롬프트
+            extraction_prompt = f"""
+당신은 자연어 텍스트에서 할일(Todo) 정보를 추출하는 전문가입니다.
+
+사용자 요청: "{parsed_command.original_text}"
+
+위 텍스트에서 다음 정보를 추출하여 JSON 형식으로 응답해주세요:
+
+1. **title**: 실제 할일 내용 (명령어나 요청 표현 제거)
+2. **priority**: 우선순위 (high/medium/low)
+3. **due_date**: 마감일 (YYYY-MM-DD 형식, 상대적 표현을 절대 날짜로 변환)
+4. **description**: 추가 설명이나 맥락
+5. **tags**: 관련 태그들
+
+**분석 규칙:**
+- "할일을 추가해줘", "Notion에 넣어줘" 같은 명령어는 title에서 제외
+- "높은 우선순위", "중요한" → priority: "높음"
+- "보통", "일반적인" → priority: "중간"  
+- "낮은", "여유있는" → priority: "낮음"
+- "내일", "tomorrow" → 내일 날짜로 변환
+- "프로젝트", "문서" 같은 키워드는 tags에 포함
+
+**현재 날짜**: 2025-09-05
+
+**응답 형식:**
+```json
+{{
+    "title": "실제 할일 내용",
+    "priority": "높음|중간|낮음",
+    "due_date": "YYYY-MM-DD 또는 null",
+    "description": "추가 설명 또는 null",
+    "tags": ["태그1", "태그2"]
+}}
+```
+"""
+
+            # LLM에게 파라미터 추출 요청
+            messages = [{"role": "user", "content": extraction_prompt}]
+            response = await self.llm_manager.generate_response(messages, temperature=0.3)
+            
+            # JSON 응답 파싱
+            extracted_data = self._extract_json_from_response(response.content)
+            
+            # 안전한 기본값 설정
+            params = {
+                "title": extracted_data.get("title", "새로운 할일"),
+                "priority": extracted_data.get("priority", "중간"),
+                "due_date": extracted_data.get("due_date"),
+                "description": extracted_data.get("description"),
+                "tags": extracted_data.get("tags", [])
+            }
+            
+            # due_date가 문자열인 경우 처리
+            if params["due_date"] and isinstance(params["due_date"], str):
+                # 내일 날짜 처리
+                if params["due_date"] == "2025-09-06":  # 내일
+                    from datetime import datetime, timedelta
+                    tomorrow = datetime.now() + timedelta(days=1)
+                    params["due_date"] = tomorrow.strftime("%Y-%m-%d")
+            
+            logger.info(f"에이전틱 Todo 파라미터 추출 완료: {params}")
+            return params
+            
+        except Exception as e:
+            logger.error(f"에이전틱 Todo 파라미터 추출 실패: {e}")
+            # 실패시 안전한 기본값 반환
+            return {
+                "title": "새로운 할일",
+                "priority": "중간",
+                "due_date": None,
+                "description": None,
+                "tags": []
+            }
+    
+    async def _execute_search_task(
+        self,
+        parsed_command: ParsedCommand,
+        user_id: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """검색 관련 작업 실행"""
+        return {
+            "status": "not_implemented",
+            "message": "검색 기능은 아직 구현되지 않았습니다."
+        }
     
     async def generate_personalized_response(
         self,

@@ -227,15 +227,29 @@ def process_message(message, user_id, user_name, context, format):
                 context={"user_name": user_name, "platform": context}
             )
             
-            # 개인화된 응답 생성
-            ai_response = await nlp_processor.generate_personalized_response(
+            # 🚀 실제 도구 실행 추가!
+            execution_result = await nlp_processor.execute_command(
+                parsed_command=parsed_result,
                 user_id=str(user_id),
-                message=message,
-                context={
-                    "user_profile": {"name": user_name},
-                    "parsed_command": parsed_result
-                }
+                context={"user_name": user_name, "platform": context}
             )
+            
+            # 실행 결과에 따른 응답 생성
+            if execution_result["status"] == "success":
+                ai_response = execution_result["message"]
+            elif execution_result["status"] == "clarification_needed":
+                ai_response = execution_result["message"]
+            else:
+                # 실행 실패시 개인화된 응답 생성
+                ai_response = await nlp_processor.generate_personalized_response(
+                    user_id=str(user_id),
+                    message=message,
+                    context={
+                        "user_profile": {"name": user_name},
+                        "parsed_command": parsed_result,
+                        "execution_error": execution_result
+                    }
+                )
             
             response_data = {
                 "status": "success",
@@ -245,6 +259,7 @@ def process_message(message, user_id, user_name, context, format):
                 "confidence": parsed_result.confidence,
                 "urgency": parsed_result.urgency.value,
                 "required_tools": parsed_result.requires_tools,
+                "execution_result": execution_result,  # 실행 결과 추가
                 "user_id": user_id,
                 "user_name": user_name,
                 "context": context,
@@ -283,6 +298,15 @@ def process_message(message, user_id, user_name, context, format):
                 click.echo(f"📊 신뢰도: {response_data['confidence']}")
                 if response_data['required_tools']:
                     click.echo(f"🔧 필요 도구: {', '.join(response_data['required_tools'])}")
+                
+                # 실행 결과 출력 추가
+                if "execution_result" in response_data:
+                    exec_result = response_data["execution_result"]
+                    click.echo(f"⚡ 실행 상태: {exec_result['status']}")
+                    if exec_result['status'] == 'success':
+                        click.echo(f"🎉 실행 완료: {exec_result.get('message', 'N/A')}")
+                    elif exec_result['status'] == 'error':
+                        click.echo(f"❌ 실행 실패: {exec_result.get('message', 'N/A')}")
             
         logger.info("자연어 메시지 처리 완료")
         

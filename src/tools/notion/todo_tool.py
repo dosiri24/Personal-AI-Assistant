@@ -135,6 +135,15 @@ class TodoTool(BaseTool):
                 type=ParameterType.STRING,
                 description="필터 조건 (all, pending, completed, overdue)",
                 required=False
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="조회할 최대 항목 수 (기본값: 5, 최대: 100)",
+                required=False,
+                default=5,
+                min_value=1,
+                max_value=100
             )
         ]
         
@@ -283,6 +292,17 @@ class TodoTool(BaseTool):
         """할일 목록 조회"""
         try:
             filter_type = params.get("filter", "all").lower()
+            limit = params.get("limit", 5)  # 기본값을 5개로 설정
+            
+            # limit 유효성 검사
+            if isinstance(limit, str):
+                try:
+                    limit = int(limit)
+                except ValueError:
+                    limit = 5
+            
+            # 최대 100개로 제한
+            limit = min(max(1, limit), 100)
             
             # 필터 조건 생성
             filter_criteria = None
@@ -342,7 +362,8 @@ class TodoTool(BaseTool):
             result = await self.notion_client.query_database(
                 database_id=self.database_id,
                 filter_criteria=filter_criteria,
-                sorts=sorts
+                sorts=sorts,
+                page_size=limit  # 조회할 페이지 수 제한
             )
             
             todos = []
@@ -735,7 +756,7 @@ class TodoTool(BaseTool):
                 error_message=f"할일 삭제 중 오류 발생: {e}"
             )
     
-    async def execute(self, **params) -> ToolResult:
+    async def execute(self, parameters: Dict[str, Any]) -> ToolResult:
         """도구 실행"""
         try:
             await self._ensure_client()
@@ -746,20 +767,20 @@ class TodoTool(BaseTool):
                     error_message="Notion 할일 데이터베이스 ID가 설정되지 않았습니다"
                 )
             
-            action = params.get("action", "").lower()
+            action = parameters.get("action", "").lower()
             
             if action == "create":
-                return await self._create_todo(params)
+                return await self._create_todo(parameters)
             elif action == "list":
-                return await self._list_todos(params)
+                return await self._list_todos(parameters)
             elif action == "get":
-                return await self._get_todo(params)
+                return await self._get_todo(parameters)
             elif action == "update":
-                return await self._update_todo(params)
+                return await self._update_todo(parameters)
             elif action == "delete":
-                return await self._delete_todo(params)
+                return await self._delete_todo(parameters)
             elif action == "complete":
-                return await self._complete_todo(params)
+                return await self._complete_todo(parameters)
             else:
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
