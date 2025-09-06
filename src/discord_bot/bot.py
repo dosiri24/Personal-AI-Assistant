@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root))
 
 import discord
 from discord.ext import commands
+from .ai_handler import get_ai_handler
 import asyncio
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -171,6 +172,10 @@ class DiscordBot:
                 return
             
             # 사용자 권한 확인
+            self.logger.info(f"권한 확인: 사용자 {message.author} (ID: {message.author.id})")
+            self.logger.info(f"허용된 사용자: {self.allowed_users}")
+            self.logger.info(f"관리자 사용자: {self.admin_users}")
+            
             if not self._is_authorized_user(message.author.id):
                 self.logger.warning(f"권한 없는 사용자의 메시지: {message.author} ({message.author.id})")
                 await message.reply("❌ 이 봇을 사용할 권한이 없습니다.")
@@ -183,9 +188,12 @@ class DiscordBot:
             is_dm = isinstance(message.channel, discord.DMChannel)
             is_mentioned = self.bot.user and self.bot.user in message.mentions
             
-            # DM이거나 봇이 멘션된 경우 처리
-            if is_dm or is_mentioned:
-                await self._handle_ai_message(message)
+            self.logger.info(f"메시지 타입 확인: is_dm={is_dm}, is_mentioned={is_mentioned}")
+            self.logger.info(f"채널 타입: {type(message.channel)}")
+            
+            # 모든 메시지를 AI가 처리하도록 변경 (DM, 멘션, 서버 메시지 모두)
+            self.logger.info("AI 메시지 처리 시작")
+            await self._handle_ai_message(message)
             
             # 명령어 처리
             await self.bot.process_commands(message)
@@ -226,6 +234,8 @@ class DiscordBot:
             message: Discord 메시지 객체
         """
         try:
+            self.logger.info(f"AI 메시지 처리 시작: {message.author} -> {message.content}")
+            
             # 빈 메시지 처리
             content = message.content.strip()
             if self.bot.user and self.bot.user in message.mentions:
@@ -237,6 +247,8 @@ class DiscordBot:
             
             # 타이핑 표시 시작
             async with message.channel.typing():
+                self.logger.info(f"세션 관리 시작: {message.author.id}")
+                
                 # 세션 조회/생성 (Phase 2 Step 2.4)
                 session = await self.session_manager.get_or_create_session(
                     user_id=message.author.id,
@@ -255,45 +267,38 @@ class DiscordBot:
                     }
                 )
                 
-                # 메시지 큐에 추가 (Phase 2 Step 2.3)
+                self.logger.info(f"세션 생성 완료: {session.session_id}, 턴: {turn_id}")
+                
+                # AI Handler를 통한 직접 메시지 처리 (메시지 큐 사용 안함)
                 try:
-                    message_id = await self.message_queue.enqueue(
-                        user_id=message.author.id,
-                        channel_id=message.channel.id,
-                        content=content,
-                        message_type="natural_language",
-                        metadata={
-                            "discord_message_id": message.id,
-                            "session_id": session.session_id,
-                            "turn_id": turn_id,
-                            "guild_id": message.guild.id if message.guild else None,
-                            "author_name": str(message.author),
-                            "channel_name": str(message.channel)
-                        }
+                    self.logger.info("AI Handler 호출 시작")
+                    ai_handler = get_ai_handler()
+                    self.logger.info(f"AI Handler 상태: {await ai_handler.get_status()}")
+                    
+                    ai_response = await ai_handler.process_message(
+                        content, 
+                        str(message.author.id), 
+                        str(message.channel.id)
                     )
                     
-                    # 컨텍스트 조회 (최근 5개 대화)
-                    recent_context = await self.session_manager.get_conversation_context(
-                        user_id=message.author.id,
-                        turns_limit=5
+                    self.logger.info(f"AI 응답 받음: {ai_response.content[:100]}...")
+                    
+                    # AI 응답 전송
+                    await message.reply(ai_response.content)
+                    
+                    # 세션에 AI 응답 저장
+                    await self.session_manager.update_conversation_turn(
+                        turn_id=turn_id,
+                        bot_response=ai_response.content
                     )
                     
-                    context_info = ""
-                    if recent_context:
-                        context_info = f"\n💭 대화 컨텍스트: 최근 {len(recent_context)}개 대화 참조"
+                    self.logger.info(f"AI 응답 완료: {message.author.id}")
                     
-                    # 큐에 추가되었음을 사용자에게 알림
-                    await message.reply(
-                        f"📋 메시지를 접수했습니다! (ID: `{message_id[:8]}...`)\n"
-                        f"🗣️ 세션: `{session.session_id[:8]}...`{context_info}\n"
-                        "처리가 완료되면 알려드릴게요. ⏳"
-                    )
-                    
-                    self.logger.info(f"메시지 처리 완료: {message_id} (세션: {session.session_id}, 턴: {turn_id})")
-                    
-                except Exception as e:
-                    self.logger.error(f"메시지 큐 추가 실패: {e}", exc_info=True)
-                    await message.reply("❌ 메시지 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+                except Exception as ai_error:
+                    self.logger.error(f"AI 처리 실패: {ai_error}", exc_info=True)
+                    await message.reply("AI 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+                
+                self.logger.info(f"메시지 처리 완료 (세션: {session.session_id}, 턴: {turn_id})")
         
         except Exception as e:
             self.logger.error(f"메시지 처리 중 오류: {e}", exc_info=True)

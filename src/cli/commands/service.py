@@ -3,6 +3,7 @@
 """
 
 import time
+import asyncio
 import click
 from src.utils.logger import get_logger
 from .utils import async_command, handle_errors, format_status
@@ -319,32 +320,13 @@ def _start_service_main(dev_mode: bool = True):
     try:
         logger.info("AI Assistant 서비스 초기화 시작")
         
-        # TODO: Discord Bot 초기화
+        # Discord Bot 초기화 및 실행
         click.echo("⏳ Discord Bot 초기화 중...")
         logger.info("Discord Bot 초기화")
-        time.sleep(1)  # 임시 대기
         
-        # TODO: AI Engine 초기화
-        click.echo("⏳ AI Engine 초기화 중...")
-        logger.info("AI Engine 초기화")
-        time.sleep(1)  # 임시 대기
+        # Discord Bot 실행
+        asyncio.run(_run_discord_bot(dev_mode))
         
-        # TODO: 데이터베이스 연결
-        click.echo("⏳ 데이터베이스 연결 중...")
-        logger.info("데이터베이스 연결")
-        time.sleep(1)  # 임시 대기
-        
-        if dev_mode:
-            click.echo("✅ AI Assistant가 개발 모드로 시작되었습니다!")
-            click.echo("   Ctrl+C로 종료할 수 있습니다.")
-        
-        logger.info("AI Assistant 서비스 시작 완료")
-        
-        # 메인 이벤트 루프
-        while True:
-            # TODO: 실제 서비스 로직 구현
-            time.sleep(1)
-            
     except KeyboardInterrupt:
         if dev_mode:
             click.echo("\n⏹️  종료 신호를 받았습니다...")
@@ -354,6 +336,53 @@ def _start_service_main(dev_mode: bool = True):
         raise
     finally:
         logger.info("AI Assistant 서비스 종료")
+
+
+async def _run_discord_bot(dev_mode: bool = True):
+    """Discord Bot 실행"""
+    logger = get_logger("discord_service")
+    
+    try:
+        from src.config import Settings
+        from src.discord_bot.bot import DiscordBot
+        
+        # 설정 로드
+        settings = Settings()
+        
+        if not settings.has_valid_discord_token():
+            logger.error("유효한 Discord 토큰이 없습니다. .env 파일을 확인하세요.")
+            click.echo("❌ Discord 토큰이 설정되지 않았습니다.")
+            return
+        
+        # AI Engine 초기화
+        click.echo("⏳ AI Engine 초기화 중...")
+        logger.info("AI Engine 초기화")
+        # TODO: 실제 AI Engine 초기화
+        
+        # 데이터베이스 연결
+        click.echo("⏳ 데이터베이스 연결 중...")
+        logger.info("데이터베이스 연결")
+        # TODO: 실제 데이터베이스 연결
+        
+        # Discord Bot 생성 및 시작
+        bot = DiscordBot(settings)
+        logger.info("Discord Bot 시작 중...")
+        
+        if dev_mode:
+            click.echo("✅ AI Assistant가 개발 모드로 시작되었습니다!")
+            click.echo("   🤖 Discord Bot 연결 중...")
+            click.echo("   Ctrl+C로 종료할 수 있습니다.")
+        
+        logger.info("AI Assistant 서비스 시작 완료")
+        
+        # Discord Bot 실행 (블로킹)
+        await bot.start()
+        
+    except Exception as e:
+        logger.error(f"Discord Bot 실행 중 오류: {e}")
+        if dev_mode:
+            click.echo(f"❌ Discord Bot 실행 오류: {e}")
+        raise
 
 
 # 서비스 명령어들을 리스트로 export

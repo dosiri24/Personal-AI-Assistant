@@ -24,6 +24,13 @@ except ImportError as e:
 from loguru import logger
 from typing import TYPE_CHECKING
 
+# 성능 최적화 모듈 import
+from ..utils.performance import (
+    global_cache, global_resource_pool, global_performance_monitor,
+    cache_result, performance_monitor
+)
+from ..utils.error_handler import handle_errors, retry_on_failure, APIError
+
 if TYPE_CHECKING:
     from ..config import Settings
 else:

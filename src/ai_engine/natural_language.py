@@ -20,6 +20,10 @@ from ..config import Settings
 from ..mcp.registry import ToolRegistry
 from ..mcp.executor import ToolExecutor
 from ..mcp.base_tool import ExecutionStatus
+from ..utils.error_handler import (
+    handle_errors, retry_on_failure, APIError, ValidationError, 
+    SystemError, ErrorSeverity
+)
 
 
 class IntentType(Enum):

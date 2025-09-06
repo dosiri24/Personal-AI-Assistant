@@ -8,7 +8,7 @@ import os
 # 프로젝트 루트 경로 추가
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from tools.base_tool import BaseTool
+from ...mcp.base_tool import BaseTool, ToolResult, ExecutionStatus, ToolMetadata, ToolParameter, ParameterType, ToolCategory
 from .scheduler import WebCrawlScheduler, CrawlJob
 
 

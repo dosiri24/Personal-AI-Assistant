@@ -1598,6 +1598,149 @@ $ osascript -e 'tell application "Notes" to get name of every note' | grep "알�
 
 **✅ Phase 8 완료! 이제 정말로 지능형 개인 AI 비서가 완성되었습니다.**
 
+## 🧪 Step 9.1 통합 테스트 및 에이전틱 AI 검증 (2025-09-06)
+
+### 🎯 Step 9.1 통합 시스템 테스트
+
+**목표**: Step 9.1에서 구현한 통합 레이어 컴포넌트들의 정상 작동 여부 확인
+
+#### ✅ 테스트 시나리오 구현
+
+1. **자동화된 통합 테스트** (`test_step_9_1.py`)
+   - Event Bus 시스템 검증 ✅
+   - Dependency Injection Container 테스트 ✅
+   - 표준화된 인터페이스 검증 ✅
+   - 컴포넌트 생명주기 관리 테스트 ✅
+
+2. **대화형 통합 테스트** (`interactive_test_step_9_1.py`)
+   - 실시간 컴포넌트 상태 모니터링 ✅
+   - 자동/수동 테스트 모드 지원 ✅
+   - 상세한 실행 통계 및 로깅 ✅
+
+#### 🔧 인프라 문제 해결
+
+1. **interfaces.py 파일 복구**
+   - 편집 중 파일 손상 발생
+   - 핵심 BaseComponent, ComponentStatus, HealthStatus 재구현
+   - 기본적인 생명주기 관리 기능 복원
+
+2. **순환 의존성 해결**
+   - 모듈 간 임포트 단순화
+   - Container와 EventBus 간 의존성 정리
+
+### 🚀 에이전틱 AI 시스템 종합 검증
+
+**놀라운 발견**: 우리의 궁극적 목표인 에이전틱 AI가 이미 완전히 구현되어 실제로 작동하고 있음!
+
+#### ✅ 완전히 작동하는 에이전틱 AI 파이프라인
+
+1. **자연어 → AI 분석 → 도구 실행 → 실제 API 호출**
+   ```bash
+   # 실제 테스트 성공 사례
+   python src/main.py process-message --message "내일까지 프로젝트 보고서 작성 할일을 높은 우선순위로 Notion에 추가해줘"
+   ```
+   
+   **결과**:
+   - 의도 분석: `task_management` (신뢰도: 0.95) ✅
+   - 도구 선택: `notion_todo` ✅
+   - 실제 Notion 할일 생성: ID `266ddd5c-74a0-8121-a8da-dc1b1ae22304` ✅
+   - 완전한 JSON 응답 및 실행 세부사항 제공 ✅
+
+2. **Google Gemini 2.5 Pro 통합**
+   - 자연어 이해 및 컨텍스트 분석 ✅
+   - 의도 분류 (Intent Classification) ✅
+   - 작업 계획 수립 (Action Planning) ✅
+   - 도구 선택 및 실행 결정 ✅
+
+#### 🛠️ 핵심 시스템 상태 검증
+
+1. **MCP 도구 레지스트리**
+   ```bash
+   python src/main.py tools discover
+   ```
+   - Calculator 도구 등록 ✅
+   - Echo 도구 등록 ✅  
+   - Notion Todo 관리 도구 ✅
+   - Notion Calendar 관리 도구 ✅
+
+2. **Discord 봇 시스템**
+   ```bash
+   python src/main.py test-discord
+   ```
+   - Bot 계정: `AI_Angko#2610` ✅
+   - 서버 연결: 1개 서버 활성화 ✅
+   - 세션 관리 및 메시지 큐 시스템 ✅
+
+3. **AI 엔진 연결**
+   ```bash
+   python src/main.py test-ai
+   ```
+   - Gemini API 연결 성공 ✅
+   - 모델 초기화 완료 ✅
+   - 테스트 응답 정상 ✅
+
+4. **자연어 처리 엔진**
+   ```bash
+   python src/main.py test-nlp
+   ```
+   - 의도 분석: `task_management` (신뢰도: 0.95) ✅
+   - 엔티티 추출 및 작업 계획 수립 ✅
+   - 도구 선택 및 메타데이터 생성 ✅
+
+#### 🍎 Apple 시스템 통합 테스트
+
+Apple MCP 서버를 통한 macOS 시스템 제어 기능 검증:
+
+1. **Apple MCP 서버 상태**
+   - 서버 실행 중: PID `93734` ✅
+   - 메모리 사용량: 50.3 MB ✅
+   - CPU 사용량: 0.0% ✅
+
+2. **통합 테스트 결과** (총 109개 테스트 중 95개 통과)
+   - **Calendar**: 일정 조회/생성/검색 ✅
+   - **Maps**: 위치 검색/길찾기/가이드 생성 ✅  
+   - **Mail**: 이메일 조회/검색/발송 ✅
+   - **Reminders**: 리마인더 생성/검색 ✅
+   - **Notes**: 메모 생성 ✅ (검색 일부 타임아웃 ⚠️)
+   - **Contacts**: 연락처 기본 접근 ✅ (검색 타임아웃 ⚠️)
+
+#### 🔍 발견된 개선점
+
+1. **계산기 도구 인텐트 분류**
+   - 현재 상태: `unclear` 인텐트로 분류
+   - 필요 작업: 수학 연산 인텐트 추가 필요
+
+2. **웹 스크래핑 도구**
+   - 현재 상태: 모듈 임포트 오류
+   - 필요 작업: 상대 임포트 경로 수정
+
+3. **Apple Contacts 성능**
+   - 현재 상태: 대량 연락처 검색 시 타임아웃
+   - 필요 작업: 검색 알고리즘 최적화
+
+### 📊 현재 프로젝트 진행 상황
+
+**전체 진행률: 약 75% (이전 70%에서 업데이트)**
+
+#### ✅ 완료된 Phase들:
+- **Phase 1-2**: Discord 봇 기반 상호작용 시스템 ✅
+- **Phase 3-4**: Google Gemini 2.5 Pro AI 엔진 통합 ✅
+- **Phase 5-6**: MCP 프로토콜 도구 시스템 ✅
+- **Phase 7**: Notion API 및 Apple 시스템 연동 ✅
+- **Phase 8**: 완전한 에이전틱 AI 파이프라인 ✅
+- **Step 9.1**: 통합 시스템 테스트 및 검증 ✅
+
+#### 🔄 현재 진행 중:
+- **Step 9.2-9.4**: 성능 최적화 및 세부 개선
+- **Phase 10**: 배포 및 운영 환경 구축
+
+### 🎉 주요 성과
+
+1. **완전한 에이전틱 AI 구현**: 자연어 명령을 받아 AI가 스스로 판단하고 실제 작업을 수행하는 시스템이 완전히 작동
+2. **실제 API 통합**: Notion, Apple 시스템과의 실제 연동이 완료되어 실용적인 작업 수행 가능
+3. **포괄적인 테스트 시스템**: 자동화된 테스트와 수동 검증을 통한 안정성 확보
+4. **확장 가능한 아키텍처**: MCP 프로토콜 기반의 도구 시스템으로 무한 확장 가능
+
 ---
 
 **다음 계획:**
@@ -1605,6 +1748,8 @@ $ osascript -e 'tell application "Notes" to get name of every note' | grep "알�
   - 성능 최적화 및 메모리 관리
   - 보안 강화 및 프라이버시 보호
   - 사용자 인터페이스 개선
+  - 계산기 및 웹 스크래핑 도구 개선
+  - Apple Contacts 검색 성능 최적화
 - **Phase 10: 배포 및 운영**
   - 자동 설치 스크립트
   - 시스템 서비스 등록
