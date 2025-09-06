@@ -11,6 +11,7 @@ from loguru import logger
 
 # AI 엔진 관련 import
 from ..ai_engine.llm_provider import GeminiProvider, ChatMessage
+from ..mcp.mcp_integration import MCPIntegration
 from ..config import Settings
 
 # MCP 도구 import
@@ -66,6 +67,9 @@ class AIMessageHandler:
         self._initialize_ai_engine()
         self._initialize_mcp_tools()
         self._report_tools_status()
+        
+        # MCP 통합 (에이전틱 LLM이 도구 선택/실행)
+        self._mcp: Optional[MCPIntegration] = None
         
     def _initialize_ai_engine(self):
         """AI 엔진 초기화"""
@@ -199,104 +203,77 @@ class AIMessageHandler:
             logger.error(f"Gemini Provider 비동기 초기화 중 오류: {e}")
     
     async def process_message(self, user_message: str, user_id: str, channel_id: str) -> AIResponse:
-        """사용자 메시지를 AI 엔진으로 처리"""
-        
-        # 1단계: 도구 필요성 확인 및 실행
-        tool_result = await self._check_and_execute_tools(user_message)
-        
-        if not self.llm_provider:
-            response_content = f"AI 엔진이 초기화되지 않았습니다. 관리자에게 문의하세요."
-            if tool_result:
-                response_content = f"{tool_result}\n\n{response_content}"
-                
-            return AIResponse(
-                content=response_content,
-                confidence=0.5,
-                metadata={"error": "AI 엔진 미초기화"}
-            )
-        
-        # Gemini가 초기화되지 않았다면 다시 시도
-        if not self.llm_provider.is_available():
-            logger.info("Gemini Provider 재초기화 시도")
-            try:
-                success = await self.llm_provider.initialize()
-                if not success:
-                    logger.error("Gemini Provider 재초기화 실패")
-                    response_content = "AI 서비스 초기화에 실패했습니다. 잠시 후 다시 시도해주세요."
-                    if tool_result:
-                        response_content = f"{tool_result}\n\n{response_content}"
-                    return AIResponse(
-                        content=response_content,
-                        confidence=0.0,
-                        metadata={"error": "Gemini 초기화 실패"}
-                    )
-            except Exception as e:
-                logger.error(f"Gemini Provider 재초기화 중 오류: {e}")
-                response_content = "AI 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해주세요."
-                if tool_result:
-                    response_content = f"{tool_result}\n\n{response_content}"
-                return AIResponse(
-                    content=response_content,
-                    confidence=0.0,
-                    metadata={"error": str(e)}
-                )
-        
+        """사용자 메시지 처리: LLM이 도구 선택/실행(MCP)까지 담당"""
         try:
-            # 도구 실행 결과가 있으면 도구 결과만 반환 (AI 응답 생략)
-            if tool_result:
-                return AIResponse(
-                    content=tool_result,
-                    confidence=0.95,
-                    reasoning="도구 실행 완료",
-                    metadata={
-                        "original_message": user_message,
-                        "processed_at": datetime.now().isoformat(),
-                        "tool_executed": True,
-                        "tools_used": ["mcp_tool"]
-                    }
-                )
-            
-            # 도구 실행이 없었던 경우에만 AI 응답 생성
-            messages = self._build_prompt(user_message, user_id)
-            ai_response = await self.llm_provider.generate_response(messages)
-            
+            # MCP 통합 초기화 (한 번만)
+            await self._ensure_mcp()
+            # 최근 대화 10개를 컨텍스트로 전달 (user/assistant 순서 유지)
+            history: List[Dict[str, Any]] = []
+            try:
+                int_user_id = int(user_id)
+            except Exception:
+                int_user_id = None
+            if int_user_id is not None:
+                turns = await self.session_manager.get_conversation_context(int_user_id, turns_limit=10)
+                # 최근순 → 시간순으로 뒤집어서 추가
+                for t in reversed(turns):
+                    if t.user_message:
+                        history.append({"role": "user", "content": t.user_message})
+                    if t.bot_response:
+                        history.append({"role": "assistant", "content": t.bot_response})
+
+            result_text = await self._mcp.process_user_request(
+                user_message, user_id=user_id, conversation_history=history
+            )
             return AIResponse(
-                content=ai_response.content,
-                confidence=0.8,
-                reasoning="AI 자연어 처리",
+                content=result_text,
+                confidence=0.9,
+                reasoning="agentic_mcp",
                 metadata={
                     "original_message": user_message,
                     "processed_at": datetime.now().isoformat(),
-                    "model": "gemini-2.5-pro",
-                    "tools_used": []
+                    "via": "mcp_integration"
                 }
             )
-            
         except Exception as e:
-            logger.error(f"AI 메시지 처리 오류: {e}")
-            response_content = "처리 중 오류가 발생했습니다. 다시 시도해주세요."
-            if tool_result:
-                response_content = f"{tool_result}\n\n{response_content}"
-            return AIResponse(
-                content=response_content,
-                confidence=0.0,
-                metadata={"error": str(e)}
-            )
+            logger.error(f"MCP 처리 실패, 일반 LLM 응답 시도: {e}")
+            # 일반 LLM 답변 (도구 미선택 등)
+            try:
+                if not self.llm_provider:
+                    raise RuntimeError("LLM Provider not initialized")
+                if not self.llm_provider.is_available():
+                    ok = await self.llm_provider.initialize()
+                    if not ok:
+                        raise RuntimeError("LLM Provider initialize failed")
+                messages = self._build_prompt(user_message, user_id)
+                ai_response = await self.llm_provider.generate_response(messages)
+                return AIResponse(content=ai_response.content, confidence=0.7)
+            except Exception as e2:
+                logger.error(f"일반 LLM 응답도 실패: {e2}")
+                return AIResponse(content=f"❌ 처리 중 오류: {e}", confidence=0.0)
     
     def _build_prompt(self, user_message: str, user_id: str) -> List[ChatMessage]:
         """AI를 위한 프롬프트 구성"""
-        system_prompt = """당신은 Discord에서 사용자를 도와주는 AI 어시스턴트입니다.
-
-사용자의 요청에 따라 친절하고 도움이 되는 답변을 제공하세요.
-한국어로 자연스럽게 대화하세요.
-
-메모나 할일 관련 요청이 있으면 도구를 사용해서 처리한다고 안내하세요.
-"""
+        system_prompt = (
+            "당신은 Discord에서 사용자를 돕는 개인 비서 AI입니다.\n"
+            "- 따뜻하고 친근한 톤으로 1~3문장 이내로 답하세요.\n"
+            "- 과한 자기소개/홍보/기능 나열은 피하고, 바로 도움이 되는 답을 주세요.\n"
+            "- 필요 시 간단한 후속 질문 하나만 덧붙이세요.\n"
+            "- 도구 사용 언급은 최소화하고, 결과/다음 행동만 명확히 제시하세요.\n"
+            "- 한국어로 자연스럽고 예의 있게 답하세요.\n"
+            "- 중복/연속 답변 금지.\n"
+            "- 당신의 이름은 '앙미니'입니다. 이름을 물으면 그렇게 소개하세요."
+        )
         
         return [
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_message)
         ]
+
+    async def _ensure_mcp(self) -> None:
+        if self._mcp is None:
+            self._mcp = MCPIntegration()
+            await self._mcp.initialize()
     
     async def _check_and_execute_tools(self, user_message: str) -> Optional[str]:
         """에이전틱 AI 기반 도구 선택 및 실행"""
@@ -565,21 +542,21 @@ class AIMessageHandler:
             if not self.notion_todo_tool:
                 return "❌ Notion Todo 도구가 연결되지 않았습니다."
             
-            memo_content = self._extract_memo_content(user_message)
-            
-            # 실제 Notion API 호출
-            logger.info(f"Notion Todo 도구 실행: {memo_content}")
-            
-            # TodoTool의 execute 메서드 호출 - 올바른 파라미터 형식
-            parameters = {
-                "action": "create",
-                "title": memo_content,
-                "description": f"Discord에서 추가됨: {user_message}"
-            }
+            # 자연어 → Todo 파라미터 변환 (LLM 에이전틱)
+            parameters = await self._agentic_parameters(user_message, "notion_todo")
+            # 설명이 없을 경우, 원문을 출처로 남김
+            if "description" not in parameters:
+                parameters["description"] = f"Discord에서 추가됨: {user_message}"
+
+            logger.info(f"Notion Todo 도구 실행 파라미터: {parameters}")
             result = await self.notion_todo_tool.execute(parameters)
             
             if result.status == ExecutionStatus.SUCCESS:
-                return f"✅ Notion에 할일을 추가했습니다: {memo_content}"
+                d = result.data or {}
+                title = d.get("title") or parameters.get("title")
+                due = parameters.get("due_date")
+                due_text = f" (마감: {due})" if due else ""
+                return f"✅ Notion에 할일을 추가했습니다: {title}{due_text}"
             else:
                 return f"❌ Notion 할일 추가 실패: {result.error_message}"
             
@@ -622,30 +599,35 @@ class AIMessageHandler:
             if not self.notion_calendar_tool:
                 return "❌ Notion Calendar 도구가 연결되지 않았습니다."
             
-            # 일정 내용 추출
-            schedule_content = self._extract_schedule_content(user_message)
-            
-            # 실제 Notion Calendar API 호출
-            logger.info(f"Notion Calendar 도구 실행: {schedule_content}")
-            
-            # CalendarTool의 execute 메서드 호출
-            parameters = {
-                "action": "create",
-                "title": schedule_content.get("title", "새 일정"),
-                "date": schedule_content.get("date"),
-                "time": schedule_content.get("time"),
-                "description": f"Discord에서 추가됨: {user_message}"
-            }
+            # LLM 에이전틱으로 캘린더 파라미터 생성
+            parameters = await self._agentic_parameters(user_message, "notion_calendar")
+            if "description" not in parameters:
+                parameters["description"] = f"Discord에서 추가됨: {user_message}"
             result = await self.notion_calendar_tool.execute(parameters)
             
             if result.status == ExecutionStatus.SUCCESS:
-                return f"📅 Notion에 일정을 추가했습니다: {schedule_content.get('title', '새 일정')}"
+                title = parameters.get("title") or "새 일정"
+                return f"📅 Notion에 일정을 추가했습니다: {title}"
             else:
                 return f"❌ Notion 일정 추가 실패: {result.error_message}"
             
         except Exception as e:
             logger.error(f"Notion Calendar 도구 실행 실패: {e}")
             return f"❌ Notion 일정 추가 실패: {str(e)}"
+
+    async def _agentic_parameters(self, natural_command: str, tool_name: str) -> Dict[str, Any]:
+        """LLM 기반으로 자연어를 도구 파라미터로 변환"""
+        if not self.llm_provider:
+            raise RuntimeError("LLM Provider가 초기화되지 않았습니다")
+        if not self.llm_provider.is_available():
+            ok = await self.llm_provider.initialize()
+            if not ok:
+                raise RuntimeError("LLM Provider 초기화 실패")
+        # 의존성 import 지연
+        from ..ai_engine.decision_engine import AgenticDecisionEngine
+        from ..ai_engine.prompt_templates import PromptManager
+        engine = AgenticDecisionEngine(self.llm_provider, PromptManager())
+        return await engine.parse_natural_command(natural_command, tool_name)
 
     async def _execute_calculator(self, user_message: str) -> str:
         """실제 Calculator 도구 실행"""

@@ -128,25 +128,25 @@ class AgenticDecisionEngine:
                 optional_params=["priority", "due_date", "category", "description"]
             ),
             Tool(
-                name="web_search",
-                description="웹에서 정보를 검색합니다",
-                capabilities=["웹 검색", "실시간 정보 조회"],
-                required_params=["query"],
-                optional_params=["max_results", "date_range"]
-            ),
-            Tool(
-                name="file_manager",
-                description="파일과 폴더를 관리합니다",
-                capabilities=["파일 생성", "파일 삭제", "파일 이동", "폴더 생성"],
-                required_params=["action", "path"],
-                optional_params=["content", "destination"]
-            ),
-            Tool(
-                name="email_client",
-                description="이메일을 읽고 보냅니다",
-                capabilities=["이메일 읽기", "이메일 보내기", "이메일 검색"],
+                name="apple_notes",
+                description="Apple Notes에 메모를 생성/검색/수정/삭제합니다",
+                capabilities=["메모 생성", "메모 검색", "메모 수정", "메모 삭제"],
                 required_params=["action"],
-                optional_params=["to", "subject", "body", "search_query"]
+                optional_params=["title", "content", "folder", "search_query", "note_id"]
+            ),
+            Tool(
+                name="calculator",
+                description="기본 사칙연산 계산을 수행합니다",
+                capabilities=["덧셈", "뺄셈", "곱셈", "나눗셈"],
+                required_params=["operation", "a", "b"],
+                optional_params=["precision"]
+            ),
+            Tool(
+                name="echo",
+                description="입력 텍스트를 그대로 반환합니다",
+                capabilities=["반복"],
+                required_params=["text"],
+                optional_params=[]
             )
         ]
         
@@ -186,7 +186,7 @@ class AgenticDecisionEngine:
             
         except Exception as e:
             self.logger.error(f"의사결정 중 오류: {e}")
-            return self._create_fallback_decision(context)
+            raise
     
     def _create_decision_prompt(self, context: DecisionContext, tools_info: List[Dict]) -> str:
         """의사결정을 위한 프롬프트를 생성합니다"""
@@ -201,8 +201,8 @@ class AgenticDecisionEngine:
 **사용 가능한 도구들:**
 {json.dumps(tools_info, ensure_ascii=False, indent=2)}
 
-**대화 기록:**
-{json.dumps(context.conversation_history[-3:], ensure_ascii=False, indent=2) if context.conversation_history else "없음"}
+**대화 기록(최대 10개):**
+{json.dumps(context.conversation_history[-10:], ensure_ascii=False, indent=2) if context.conversation_history else "없음"}
 
 **지침:**
 1. 사용자의 의도를 정확히 파악하세요
@@ -271,29 +271,10 @@ class AgenticDecisionEngine:
                 
         except Exception as e:
             self.logger.error(f"응답 파싱 중 오류: {e}")
-            # 기본 결정으로 폴백
-            return self._create_simple_decision(response_content, context)
+            raise
     
     def _create_simple_decision(self, response_content: str, context: DecisionContext) -> Decision:
-        """파싱 실패시 간단한 결정을 생성합니다"""
-        # 웹 검색을 기본으로 선택
-        return Decision(
-            selected_tools=["web_search"],
-            execution_plan=[
-                {
-                    "step": 1,
-                    "tool": "web_search",
-                    "action": "search",
-                    "parameters": {"query": context.user_message},
-                    "description": "사용자 요청에 대한 웹 검색 수행"
-                }
-            ],
-            confidence_score=0.6,
-            confidence_level=ConfidenceLevel.MEDIUM,
-            reasoning=f"요청을 분석한 결과: {response_content[:200]}...",
-            estimated_time=30,
-            requires_user_input=False
-        )
+        raise ValueError("LLM 응답 파싱 실패")
     
     def _get_confidence_level(self, confidence_score: float) -> ConfidenceLevel:
         """신뢰도 점수를 레벨로 변환"""
@@ -309,24 +290,7 @@ class AgenticDecisionEngine:
             return ConfidenceLevel.VERY_LOW
     
     def _create_fallback_decision(self, context: DecisionContext) -> Decision:
-        """오류 발생시 기본 의사결정 생성"""
-        return Decision(
-            selected_tools=["web_search"],
-            execution_plan=[
-                {
-                    "step": 1,
-                    "tool": "web_search",
-                    "action": "search",
-                    "parameters": {"query": context.user_message},
-                    "description": "오류로 인한 기본 웹 검색"
-                }
-            ],
-            confidence_score=0.3,
-            confidence_level=ConfidenceLevel.LOW,
-            reasoning="시스템 오류로 인해 기본 웹 검색을 수행합니다.",
-            estimated_time=30,
-            requires_user_input=False
-        )
+        raise RuntimeError("의사결정 실패")
     
     def register_tool(self, tool: Tool):
         """새로운 도구를 등록합니다"""

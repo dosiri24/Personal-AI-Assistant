@@ -209,6 +209,16 @@ class SessionManager:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_session_id ON conversation_turns(session_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON conversation_turns(timestamp)")
+
+                # Discord 중복 메시지 방지용 테이블 (프로세스 간 dedup)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS processed_messages (
+                        msg_id TEXT PRIMARY KEY,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
                 
                 conn.commit()
                 
@@ -217,6 +227,26 @@ class SessionManager:
         except Exception as e:
             self.logger.error(f"세션 데이터베이스 초기화 실패: {e}", exc_info=True)
             raise
+
+    async def try_mark_discord_message_processed(self, msg_id: int) -> bool:
+        """해당 Discord 메시지 ID를 처리된 것으로 마크 (이미 있으면 False)
+
+        멀티 프로세스 환경에서도 PRIMARY KEY 제약으로 원자적 dedup 보장.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                try:
+                    conn.execute(
+                        "INSERT INTO processed_messages (msg_id, created_at) VALUES (?, ?)",
+                        (str(msg_id), datetime.now().isoformat())
+                    )
+                    conn.commit()
+                    return True
+                except sqlite3.IntegrityError:
+                    return False
+        except Exception as e:
+            self.logger.error(f"메시지 dedup 마킹 실패: {msg_id} - {e}", exc_info=True)
+            return False
 
     async def start(self):
         """세션 관리 백그라운드 처리 시작"""

@@ -114,30 +114,69 @@ class AppleNotesTool(BaseTool):
             )
 
     async def _create_note(self, parameters: Dict[str, Any]) -> ToolResult:
-        """새 노트 생성"""
+        """새 노트 생성 (실제 Notes 앱 호출)"""
+        import subprocess
+        import shlex
+        
         title = parameters.get("title", "새 메모")
         content = parameters.get("content", "")
         folder = parameters.get("folder", "Notes")
         
-        # 현재는 시뮬레이션 모드
-        # 향후 실제 Apple MCP 서버와 연동할 예정
-        logger.info(f"Apple Notes에 메모 생성 시뮬레이션: {title}")
+        logger.info(f"Apple Notes에 메모 생성: {title}")
         
-        # 시뮬레이션된 노트 ID 생성
-        note_id = f"note_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # AppleScript를 사용해 실제 Notes에 노트 생성
+        # 특수문자 이스케이프 처리
+        def esc(s: str) -> str:
+            return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
         
-        return ToolResult(
-            status=ExecutionStatus.SUCCESS,
-            data={
-                "action": "create",
-                "note_id": note_id,
-                "title": title,
-                "content": content,
-                "folder": folder,
-                "created_at": datetime.now().isoformat(),
-                "message": f"Apple Notes에 메모를 추가했습니다: {title}"
-            }
-        )
+        as_title = esc(title)
+        as_content = esc(content)
+        as_folder = esc(folder)
+        
+        applescript = f'''
+        tell application "Notes"
+            set targetFolder to folder "{as_folder}" of default account
+            make new note at targetFolder with properties {{name:"{as_title}", body:"{as_content}"}}
+        end tell
+        '''
+        
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", applescript],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message=f"Notes 생성 실패: {result.stderr.strip() or result.stdout.strip()}"
+                )
+            
+            # osascript는 note id를 직접 반환하지 않음 -> 타임스탬프 기반 임시 ID
+            note_id = f"notes_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "action": "create",
+                    "note_id": note_id,
+                    "title": title,
+                    "content": content,
+                    "folder": folder,
+                    "created_at": datetime.now().isoformat(),
+                    "message": f"Apple Notes에 메모를 추가했습니다: {title}"
+                }
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message="osascript를 찾을 수 없습니다. macOS 환경인지 확인하세요."
+            )
+        except Exception as e:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"Notes 생성 중 예외: {e}"
+            )
 
     async def _search_notes(self, parameters: Dict[str, Any]) -> ToolResult:
         """노트 검색"""

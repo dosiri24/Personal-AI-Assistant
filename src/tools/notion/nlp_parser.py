@@ -112,13 +112,9 @@ class KoreanNLPParser:
             
             # 시간
             'time': [
-                r'(\d{1,2})시',
-                r'(\d{1,2})시\s*(\d{1,2})분',
-                r'(\d{1,2}):(\d{1,2})',
-                r'오전\s*(\d{1,2})시',
-                r'오후\s*(\d{1,2})시',
-                r'저녁\s*(\d{1,2})시',
-                r'새벽\s*(\d{1,2})시',
+                r'(오전|오후|저녁|밤|새벽)\s*(\d{1,2})시(?:\s*(\d{1,2})분)?',
+                r'(\d{1,2})시(?:\s*(\d{1,2})분)?(?:까지)?',
+                r'(\d{1,2}):(\d{2})'
             ]
         }
         
@@ -168,7 +164,7 @@ class KoreanNLPParser:
         # 태그 추출
         tags = self._extract_tags(text)
         
-        # 날짜/시간 추출
+        # 날짜/시간 추출 (날짜와 시간 모두 처리)
         due_date, remaining_text = self._extract_datetime(text)
         if due_date:
             confidence += 0.3
@@ -206,6 +202,7 @@ class KoreanNLPParser:
         
         now = datetime.now(timezone.utc)
         remaining_text = text
+        chosen_dt: Optional[ParsedDateTime] = None
         
         # 절대 날짜 패턴 확인
         for pattern in self.datetime_patterns['absolute_date']:
@@ -216,35 +213,89 @@ class KoreanNLPParser:
                     if parsed_dt:
                         remaining_text = re.sub(pattern, '', text, count=1).strip()
                         logger.debug(f"절대 날짜 파싱 성공: {parsed_dt.datetime}")
-                        return parsed_dt, remaining_text
+                        chosen_dt = parsed_dt
+                        text = remaining_text
+                        break
                 except Exception as e:
                     logger.warning(f"절대 날짜 파싱 실패: {e}")
+        if chosen_dt is None:
+            # 상대 날짜 패턴 확인
+            for pattern in self.datetime_patterns['relative_date']:
+                match = re.search(pattern, text)
+                if match:
+                    try:
+                        parsed_dt = self._parse_relative_date(match, now)
+                        if parsed_dt:
+                            remaining_text = re.sub(pattern, '', text, count=1).strip()
+                            logger.debug(f"상대 날짜 파싱 성공: {parsed_dt.datetime}")
+                            chosen_dt = parsed_dt
+                            text = remaining_text
+                            break
+                    except Exception as e:
+                        logger.warning(f"상대 날짜 파싱 실패: {e}")
                     
-        # 상대 날짜 패턴 확인
-        for pattern in self.datetime_patterns['relative_date']:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    parsed_dt = self._parse_relative_date(match, now)
-                    if parsed_dt:
-                        remaining_text = re.sub(pattern, '', text, count=1).strip()
-                        logger.debug(f"상대 날짜 파싱 성공: {parsed_dt.datetime}")
-                        return parsed_dt, remaining_text
-                except Exception as e:
-                    logger.warning(f"상대 날짜 파싱 실패: {e}")
-                    
-        # 요일 패턴 확인
-        for i, weekday in enumerate(['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']):
-            if weekday in text or weekday[0] in text:
-                try:
-                    parsed_dt = self._parse_weekday(i, now)
-                    remaining_text = text.replace(weekday, '').replace(weekday[0], '').strip()
-                    logger.debug(f"요일 파싱 성공: {parsed_dt.datetime}")
-                    return parsed_dt, remaining_text
-                except Exception as e:
-                    logger.warning(f"요일 파싱 실패: {e}")
-                    
-        return None, remaining_text
+        if chosen_dt is None:
+            # 요일 패턴 확인
+            for i, weekday in enumerate(['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']):
+                if weekday in text or weekday[0] in text:
+                    try:
+                        parsed_dt = self._parse_weekday(i, now)
+                        remaining_text = text.replace(weekday, '').replace(weekday[0], '').strip()
+                        logger.debug(f"요일 파싱 성공: {parsed_dt.datetime}")
+                        chosen_dt = parsed_dt
+                        text = remaining_text
+                        break
+                    except Exception as e:
+                        logger.warning(f"요일 파싱 실패: {e}")
+
+        # 시간 패턴 추출 및 적용
+        hour, minute, time_expr = self._extract_time_components(text)
+        if hour is not None:
+            # 텍스트에서 시간 표현 제거
+            if time_expr:
+                remaining_text = text.replace(time_expr, '').strip()
+            else:
+                remaining_text = text
+            base = chosen_dt.datetime if chosen_dt else now
+            dt = base.replace(hour=hour, minute=minute or 0, second=0, microsecond=0)
+            chosen_dt = ParsedDateTime(
+                datetime=dt,
+                is_relative=chosen_dt.is_relative if chosen_dt else True,
+                original_text=time_expr or '',
+                confidence=(chosen_dt.confidence if chosen_dt else 0.5) + 0.2
+            )
+
+        if chosen_dt is not None:
+            return chosen_dt, remaining_text
+        else:
+            return None, remaining_text
+
+    def _extract_time_components(self, text: str) -> Tuple[Optional[int], Optional[int], Optional[str]]:
+        """시간 성분 추출: (hour, minute, matched_text)"""
+        # 1) 오전/오후/저녁/밤/새벽 + 시/분
+        m = re.search(r'(오전|오후|저녁|밤|새벽)\s*(\d{1,2})시(?:\s*(\d{1,2})분)?', text)
+        if m:
+            meridiem = m.group(1)
+            h = int(m.group(2))
+            mi = int(m.group(3)) if m.group(3) else 0
+            if meridiem in ['오후', '저녁', '밤'] and h < 12:
+                h += 12
+            if meridiem == '새벽' and h == 12:
+                h = 0
+            return h, mi, m.group(0)
+        # 2) HH:MM
+        m = re.search(r'(\d{1,2}):(\d{2})', text)
+        if m:
+            h = int(m.group(1))
+            mi = int(m.group(2))
+            return h, mi, m.group(0)
+        # 3) HH시 / HH시MM분 (Optional '까지')
+        m = re.search(r'(\d{1,2})시(?:\s*(\d{1,2})분)?(?:까지)?', text)
+        if m:
+            h = int(m.group(1))
+            mi = int(m.group(2)) if m.group(2) else 0
+            return h, mi, m.group(0)
+        return None, None, None
         
     def _parse_absolute_date(self, match: re.Match, now: datetime) -> Optional[ParsedDateTime]:
         """절대 날짜 파싱"""
@@ -407,8 +458,19 @@ class KoreanNLPParser:
         
     def _extract_title_description(self, text: str) -> Tuple[str, Optional[str]]:
         """제목과 설명 분리"""
+        # 불필요한 어미/명령어/키워드 제거
+        clean = text
+        # 일반적인 부탁/명령 표현 제거
+        clean = re.sub(r'(해줄래|해줘|부탁해|주세요)$', '', clean).strip()
+        # todo/투두 같은 키워드 제거
+        clean = re.sub(r'\b(todo|투두)\b', '', clean, flags=re.IGNORECASE).strip()
+        # 설정/추가/등록 등의 동사 제거 (문장 끝 위주)
+        clean = re.sub(r'(설정|추가|등록)(해줄래|해줘)?$', '', clean).strip()
+        # 잔여 접미사 '까지' 제거(시간 표현 제거 후 남은 경우)
+        clean = re.sub(r'까지$', '', clean).strip()
+
         # 줄바꿈이나 특정 구분자로 제목과 설명 분리
-        lines = text.split('\n')
+        lines = clean.split('\n')
         title = lines[0].strip()
         
         if len(lines) > 1:
@@ -418,8 +480,8 @@ class KoreanNLPParser:
         # 단일 라인에서 구분자로 분리 (예: " - ", " : ")
         separators = [' - ', ' : ', ' | ']
         for sep in separators:
-            if sep in text:
-                parts = text.split(sep, 1)
+            if sep in clean:
+                parts = clean.split(sep, 1)
                 return parts[0].strip(), parts[1].strip()
                 
         return title, None

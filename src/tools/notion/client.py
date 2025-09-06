@@ -404,7 +404,9 @@ class NotionClient:
         """Notion API 연결 테스트"""
         try:
             logger.info("Notion API 연결 테스트 시작")
-            result = await self._execute_with_retry(self.client.users.me)
+            async def _op():
+                return await self.client.users.me()
+            result = await self._execute_with_retry(_op)
             if result and isinstance(result, dict):
                 logger.info(f"연결 테스트 성공: {result.get('name', 'Unknown User')}")
             else:

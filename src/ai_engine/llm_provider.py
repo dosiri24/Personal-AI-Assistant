@@ -305,10 +305,12 @@ class MockLLMProvider(LLMProvider):
             
             user_message_lower = user_message.lower()
             
-            # 계산 요청 감지
-            if any(word in user_message_lower for word in ['계산', '더하기', '빼기', '곱하기', '나누기', '+', '-', '*', '/', '얼마']):
+            # 계산 요청 감지 (연산자만 포함된 일반 하이픈/문장부호는 제외)
+            import re
+            has_math_keywords = any(word in user_message_lower for word in ['계산', '더하기', '빼기', '곱하기', '나누기', '얼마'])
+            has_math_expression = re.search(r"\d+\s*[+\-*/]\s*\d+", user_message_lower) is not None
+            if has_math_keywords or has_math_expression:
                 # 숫자 추출 시도
-                import re
                 numbers = re.findall(r'\d+', user_message)
                 if len(numbers) >= 2:
                     expression = f"{numbers[0]} + {numbers[1]}"
@@ -374,6 +376,42 @@ class MockLLMProvider(LLMProvider):
                     "confidence_level": "HIGH",
                     "reasoning": f"사용자가 '{user_message}'라고 요청했으므로 텍스트 처리 도구를 사용합니다.",
                     "estimated_time": 1,
+                    "requires_user_input": False
+                }
+                content = f"```json\n{json.dumps(response, ensure_ascii=False, indent=2)}\n```"
+            
+            # 메모/노트 추가 (Apple Notes)
+            elif any(word in user_message_lower for word in ['메모', '노트', 'apple notes', '애플메모', '애플 메모', 'notes']):
+                # 간단한 제목 추출: 따옴표 안/콜론 뒤 우선
+                import re
+                title = user_message
+                m = re.search(r"[\"'“”‘’](.+?)[\"'“”‘’]", user_message)
+                if m:
+                    title = m.group(1)
+                else:
+                    m2 = re.search(r"(?:메모|노트|note|notes)[:：]\s*(.+)$", user_message, re.IGNORECASE)
+                    if m2:
+                        title = m2.group(1).strip()
+                # 제목 길이 제한
+                display_title = title[:30]
+                response = {
+                    "selected_tools": ["apple_notes"],
+                    "execution_plan": [
+                        {
+                            "tool": "apple_notes",
+                            "parameters": {
+                                "action": "create",
+                                "title": display_title,
+                                "content": title,
+                                "folder": "Notes"
+                            },
+                            "reasoning": "메모/노트 추가 요청을 감지하여 Apple Notes 도구를 선택했습니다."
+                        }
+                    ],
+                    "confidence_score": 0.9,
+                    "confidence_level": "VERY_HIGH",
+                    "reasoning": f"사용자가 '{user_message}'라고 요청했으므로 메모를 생성합니다.",
+                    "estimated_time": 2,
                     "requires_user_input": False
                 }
                 content = f"```json\n{json.dumps(response, ensure_ascii=False, indent=2)}\n```"

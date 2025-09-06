@@ -404,5 +404,30 @@ def test_integration():
     click.echo("\nℹ️  실제 MCP-AI 통합은 Phase 3에서 구현될 예정입니다.")
 
 
+@tools.command(name="nl")
+@click.option("--text", "text", required=True, help="자연어 명령")
+@click.option("--user-id", default="cli-user", help="사용자 ID")
+def execute_natural_language(text: str, user_id: str):
+    """자연어로 MCP 도구를 실행합니다 (Mock LLM 기반)."""
+    import asyncio
+    from src.mcp.mcp_integration import MCPIntegration
+
+    async def _run():
+        click.echo("🧠 에이전틱 의사결정 + MCP 실행 초기화...")
+        integration = MCPIntegration()
+        await integration.initialize()
+
+        click.echo(f"💬 입력: {text}")
+        result = await integration.process_user_request(text, user_id=user_id)
+
+        click.echo("\n✅ 결과:")
+        click.echo(result)
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        click.echo(f"❌ 실행 실패: {e}")
+
+
 # Tools 그룹을 export
 tools_group = tools

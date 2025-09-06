@@ -9,6 +9,7 @@ import asyncio
 import discord
 from discord.ext import commands
 from typing import Optional, Callable, Any
+from collections import deque
 from pathlib import Path
 import sys
 
@@ -101,8 +102,12 @@ class DiscordBot:
         
         # 이벤트 핸들러 등록
         self._setup_event_handlers()
-        
+
         self.logger.info("Discord Bot 초기화 완료 (Phase 2 Step 2.4 - 대화 세션 관리 포함)")
+        
+        # 중복 응답 방지용 최근 메시지 캐시
+        self._recent_message_ids = deque(maxlen=2000)
+        self._recent_message_set = set()
     
     def _parse_user_ids(self, user_ids_str: str) -> set[int]:
         """
@@ -140,9 +145,30 @@ class DiscordBot:
             # 봇 상태 설정
             activity = discord.Activity(
                 type=discord.ActivityType.listening,
-                name="AI 명령을 기다리는 중..."
+                name="앙미니 | 명령을 기다리는 중"
             )
             await self.bot.change_presence(activity=activity)
+
+            # 서버(길드) 별 닉네임을 'ai어드바이저'로 고정 (권한 필요)
+            try:
+                for guild in self.bot.guilds:
+                    try:
+                        me = guild.me
+                        if me and me.nick != "앙미니":
+                            await me.edit(nick="앙미니")
+                            self.logger.info(f"길드 닉네임 설정: {guild.name} → 앙미니")
+                    except Exception as e:
+                        self.logger.warning(f"길드 닉네임 설정 실패({guild.name}): {e}")
+            except Exception as e:
+                self.logger.warning(f"닉네임 일괄 설정 중 오류: {e}")
+
+            # 가능하면 계정 사용자명도 'ai어드바이저'로 설정 (디엠 표시용, 제한/쿨다운 가능)
+            try:
+                if self.bot.user and self.bot.user.name != "앙미니":
+                    await self.bot.user.edit(username="앙미니")
+                    self.logger.info("봇 사용자명 변경: 앙미니")
+            except Exception as e:
+                self.logger.warning(f"봇 사용자명 변경 실패(권한/쿨다운 가능): {e}")
             
             self.is_running = True
             self.logger.info("Discord Bot 준비 완료")
@@ -170,6 +196,39 @@ class DiscordBot:
             # 봇 자신의 메시지는 무시
             if message.author == self.bot.user:
                 return
+            
+            # 프로세스 간 중복 방지 (DB 기반): 이미 처리한 Discord 메시지면 무시
+            try:
+                # SessionManager는 __init__에서 초기화됨
+                inserted = await self.session_manager.try_mark_discord_message_processed(message.id)
+                if not inserted:
+                    return
+            except Exception:
+                # DB 접근 오류인 경우에만 로컬 캐시로 폴백
+                try:
+                    if message.id in self._recent_message_set:
+                        return
+                    self._recent_message_set.add(message.id)
+                    self._recent_message_ids.append(message.id)
+                    while len(self._recent_message_set) > self._recent_message_ids.maxlen:
+                        oldest = self._recent_message_ids.popleft()
+                        self._recent_message_set.discard(oldest)
+                except Exception:
+                    pass
+            
+            # 동일 메시지 중복 처리 방지 (디스코드 이벤트 중복/재전송 대비)
+            try:
+                if message.id in self._recent_message_set:
+                    return
+                self._recent_message_set.add(message.id)
+                self._recent_message_ids.append(message.id)
+                # 데크가 가득 차면 가장 오래된 항목 제거
+                while len(self._recent_message_set) > self._recent_message_ids.maxlen:
+                    oldest = self._recent_message_ids.popleft()
+                    self._recent_message_set.discard(oldest)
+            except Exception:
+                # 캐시 오류는 무시하고 계속 진행
+                pass
             
             # 사용자 권한 확인
             self.logger.info(f"권한 확인: 사용자 {message.author} (ID: {message.author.id})")
