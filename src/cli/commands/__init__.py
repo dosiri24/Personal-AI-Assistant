@@ -11,6 +11,8 @@ from .monitoring import monitoring_commands
 from .tools import tools_group
 from .notion import notion_group
 from .optimization import optimization_commands
+from .apple_commands import apple_commands
+from .apple_apps_commands import apple_apps
 
 __all__ = [
     'service_commands',
@@ -18,5 +20,7 @@ __all__ = [
     'monitoring_commands',
     'tools_group',
     'notion_group',
-    'optimization_commands'
+    'optimization_commands',
+    'apple_commands',
+    'apple_apps'
 ]

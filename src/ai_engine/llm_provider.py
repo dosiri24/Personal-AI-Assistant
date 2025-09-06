@@ -22,14 +22,18 @@ except ImportError as e:
     genai = None
 
 from loguru import logger
+from typing import TYPE_CHECKING
 
-try:
-    from ..config import Settings  # type: ignore
-except ImportError:
-    # 테스트 환경을 위한 fallback
-    class Settings:
-        def __init__(self):
-            self.gemini_api_key = "test_key"
+if TYPE_CHECKING:
+    from ..config import Settings
+else:
+    try:
+        from ..config import Settings  # type: ignore
+    except ImportError:
+        # 테스트 환경을 위한 fallback
+        class Settings:
+            def __init__(self):
+                self.gemini_api_key = "test_key"
 
 
 class LLMProviderError(Exception):
@@ -398,7 +402,7 @@ class MockLLMProvider(LLMProvider):
 class LLMManager:
     """LLM Provider 통합 관리자"""
     
-    def __init__(self, config: Optional[Settings] = None):
+    def __init__(self, config: Optional["Settings"] = None):
         self.config = config or Settings()
         self.providers: Dict[str, LLMProvider] = {}
         self.default_provider = "gemini"

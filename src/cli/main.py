@@ -1,5 +1,14 @@
 """
-Personal AI Assistant CLI - 모듈화된 메인 파일
+Personal AI from .commands import (
+    service_commands, 
+    testing_commands, 
+    monitoring_commands, 
+    tools_group,
+    notion_group,
+    optimization_commands,
+    apple_commands,
+    apple_apps
+) CLI - 모듈화된 메인 파일
 
 기존 2276줄의 단일 파일을 기능별로 모듈화하여
 유지보수성과 가독성을 대폭 개선한 새로운 CLI 진입점입니다.
@@ -20,8 +29,12 @@ from src.cli.commands import (
     monitoring_commands, 
     tools_group,
     notion_group,
-    optimization_commands
+    optimization_commands,
+    apple_commands
 )
+
+# Apple 앱 명령어 그룹 import
+from src.cli.commands.apple_apps_commands import apple_apps
 
 
 @click.group()
@@ -62,6 +75,13 @@ for command in optimization_commands:
 # ========== 그룹 명령어들 등록 ==========
 cli.add_command(tools_group)
 cli.add_command(notion_group)
+
+# ========== Apple MCP 명령어들 등록 ==========
+for command in apple_commands:
+    cli.add_command(command)
+
+# ========== Apple 앱 명령어들 등록 ==========
+cli.add_command(apple_apps)
 
 
 def _start_service_main(dev_mode: bool = True):

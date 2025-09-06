@@ -41,6 +41,10 @@ except ImportError:
     MessageParser = None
     MessageRouter = None
 
+# Apple Notes 통합을 위한 간단한 헬퍼 함수들
+import subprocess
+import re
+
 
 class DiscordBot:
     """
