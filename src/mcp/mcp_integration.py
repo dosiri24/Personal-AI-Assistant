@@ -311,6 +311,28 @@ class MCPIntegration:
                         normalized = key
                         break
                 params["action"] = normalized
+
+                # 우선순위 표준화 (영문/한글/동의어 허용 → 한국어: 높음/중간/낮음)
+                pr = params.get("priority")
+                if isinstance(pr, str) and pr.strip():
+                    pr_l = pr.strip().lower()
+                    high_set = {"high", "높음", "높다", "상", "urgent", "중요", "매우높음", "very high", "긴급"}
+                    medium_set = {"medium", "normal", "중간", "보통", "일반", "중"}
+                    low_set = {"low", "낮음", "낮다", "하", "minor", "low priority", "low-priority"}
+                    if pr_l in [s.lower() for s in high_set]:
+                        params["priority"] = "높음"
+                    elif pr_l in [s.lower() for s in medium_set]:
+                        params["priority"] = "중간"
+                    elif pr_l in [s.lower() for s in low_set]:
+                        params["priority"] = "낮음"
+                    else:
+                        # 문장형 입력 처리 (예: "very_high", "매우 높음")
+                        if any(k in pr_l for k in ["very", "매우", "high", "urgent", "중요"]):
+                            params["priority"] = "높음"
+                        elif any(k in pr_l for k in ["low", "낮"]):
+                            params["priority"] = "낮음"
+                        else:
+                            params["priority"] = "중간"
                 # due_date ISO 보정(로컬 타임존 KST +09:00 적용)
                 dd = params.get("due_date")
                 if isinstance(dd, str) and ('Z' not in dd and '+' not in dd and '-' not in dd[10:]):

@@ -51,6 +51,9 @@ class AIMessageHandler:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.llm_provider: Optional[GeminiProvider] = None
+        # DiscordBot의 SessionManager를 주입하여 대화 컨텍스트를 활용 (선택적)
+        # 주입되지 않은 경우에도 안전하게 동작하도록 None으로 초기화
+        self.session_manager = None  # type: ignore[assignment]
         
         # MCP 도구들
         self.notion_todo_tool: Optional[TodoTool] = None
@@ -213,14 +216,19 @@ class AIMessageHandler:
                 int_user_id = int(user_id)
             except Exception:
                 int_user_id = None
-            if int_user_id is not None:
-                turns = await self.session_manager.get_conversation_context(int_user_id, turns_limit=10)
-                # 최근순 → 시간순으로 뒤집어서 추가
-                for t in reversed(turns):
-                    if t.user_message:
-                        history.append({"role": "user", "content": t.user_message})
-                    if t.bot_response:
-                        history.append({"role": "assistant", "content": t.bot_response})
+            # 세션 매니저가 주입된 경우에만 안전하게 컨텍스트 조회
+            if int_user_id is not None and getattr(self, "session_manager", None):
+                try:
+                    turns = await self.session_manager.get_conversation_context(int_user_id, turns_limit=10)  # type: ignore[attr-defined]
+                    # 최근순 → 시간순으로 뒤집어서 추가
+                    for t in reversed(turns):
+                        if t.user_message:
+                            history.append({"role": "user", "content": t.user_message})
+                        if t.bot_response:
+                            history.append({"role": "assistant", "content": t.bot_response})
+                except Exception as _e:
+                    # 컨텍스트 조회 실패는 무시하고 계속 진행 (MCP에는 문제 없음)
+                    pass
 
             result_text = await self._mcp.process_user_request(
                 user_message, user_id=user_id, conversation_history=history

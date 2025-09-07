@@ -332,6 +332,11 @@ class DiscordBot:
                 try:
                     self.logger.info("AI Handler 호출 시작")
                     ai_handler = get_ai_handler()
+                    # 대화 컨텍스트 활용을 위해 SessionManager 주입 (없으면 생성된 핸들러는 빈 컨텍스트로 진행)
+                    try:
+                        ai_handler.session_manager = self.session_manager  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                     self.logger.info(f"AI Handler 상태: {await ai_handler.get_status()}")
                     
                     ai_response = await ai_handler.process_message(

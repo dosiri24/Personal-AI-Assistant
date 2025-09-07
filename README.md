@@ -88,104 +88,106 @@ poetry run pai notion list-todos --filter pending
 
 ```
 Personal-AI-Assistant/
+├── main.py                         # Discord 런처(단일 인스턴스/인증서/실행)
 ├── src/
-│   ├── main.py                       # CLI 엔트리포인트 (Click)
-│   ├── daemon.py                     # 데몬 실행 유틸리티
-│   ├── config.py                     # 환경설정(.env)
-│   ├── log_manager.py                # 로그 관리
-│   ├── process_monitor.py            # 프로세스/리소스 모니터링
+│   ├── main.py                     # CLI 엔트리포인트 (Click)
+│   ├── config.py                   # 환경설정(.env)
+│   ├── daemon.py                   # 데몬 관리/상태
+│   ├── log_manager.py              # 로그 관리 유틸
+│   ├── process_monitor.py          # 프로세스/리소스 모니터링
 │   ├── cli/
-│   │   ├── main.py                   # pai 스크립트 엔트리(모듈형)
+│   │   ├── main.py                 # 명령군 등록
 │   │   └── commands/
-│   │       ├── __init__.py
-│   │       ├── service.py            # 서비스 시작/중지/상태
-│   │       ├── testing.py            # 테스트 유틸리티
-│   │       ├── monitoring.py         # 모니터링/통계 확인
-│   │       ├── optimization.py       # 최적화 관련 명령
-│   │       ├── tools.py              # 도구 관련 진단/실행
-│   │       ├── notion.py             # Notion CLI
-│   │       ├── apple_commands.py     # Apple MCP 서버 관리
-│   │       ├── apple_apps_commands.py# Apple 앱 별 테스트/도움말
+│   │       ├── service.py          # start/stop/restart/status/health/maintenance
+│   │       ├── monitoring.py       # logs/queue/sessions/process-message
+│   │       ├── tools.py            # tools list/info/execute/discover/stats/history
+│   │       ├── notion.py           # Notion CLI 도우미
+│   │       ├── apple_commands.py   # Apple MCP 서버 관리
+│   │       ├── apple_apps_commands.py
 │   │       └── utils.py
 │   ├── discord_bot/
-│   │   ├── bot.py                    # Discord Bot 본체(이벤트/권한/세션)
-│   │   ├── ai_handler.py             # 메시지 → 도구/LLM 실행 허브
-│   │   ├── parser.py                 # 메시지 파서(선택적)
-│   │   ├── router.py                 # 라우팅(선택적)
-│   │   ├── message_queue.py          # 메시지 큐
-│   │   ├── session.py                # 대화 세션 관리
+│   │   ├── bot.py                  # 이벤트/권한/세션/기본 명령어
+│   │   ├── ai_handler.py           # AI↔MCP 브리지/도구 실행 조율
+│   │   ├── parser.py               # 단순 메시지 파서
+│   │   ├── router.py               # CLI 라우팅(선택)
+│   │   ├── session.py              # 대화 세션(SQLite)
+│   │   ├── message_queue.py        # 메시지 큐(SQLite)
 │   │   └── __init__.py
 │   ├── ai_engine/
-│   │   ├── decision_engine.py        # 에이전틱 의사결정(도구선택/계획)
-│   │   ├── llm_provider.py           # Gemini/Mock LLM 프로바이더/매니저
-│   │   ├── natural_language.py       # NL 처리 유틸/파이프라인
-│   │   ├── response_generator.py     # 응답 생성 로직
-│   │   ├── prompt_templates.py       # 프롬프트 템플릿
-│   │   ├── prompt_optimizer.py       # 프롬프트 최적화
-│   │   ├── mcp_integration.py        # MCP 연계 유틸
-│   │   └── __init__.py
-│   ├── memory/                       # 장기기억/임베딩/RAG
-│   │   ├── embedding_provider.py
-│   │   ├── enhanced_models.py
-│   │   ├── memory_manager.py
-│   │   ├── models.py
-│   │   ├── rag_engine.py
-│   │   ├── simple_memory_manager.py
-│   │   ├── vector_store.py
-│   │   └── __init__.py
-│   ├── mcp/                          # MCP 프로토콜/도구 런타임
-│   │   ├── base_tool.py              # Tool 인터페이스/Result/메타데이터
-│   │   ├── protocol.py               # MCP 프로토콜 정의
-│   │   ├── executor.py               # 도구 실행기
-│   │   ├── registry.py               # 도구 레지스트리(발견/등록/활성화)
-│   │   ├── mcp_integration.py
-│   │   ├── simple_apple_client.py    # 간이 Apple 클라이언트
-│   │   ├── apple_client.py
-│   │   ├── apple_agent_v2.py         # Apple 에이전트(V2)
-│   │   ├── apple_tools.py            # Apple 도구 모음
-│   ├── tools/                        # 실제 실행 도구(앱/서비스)
-│   │   ├── calculator_tool.py        # 계산기
-│   │   ├── echo_tool.py              # 에코
-│   │   ├── apple/
-│   │   │   ├── auto_responder.py     # 알림 자동응답(에이전틱)
-│   │   │   ├── notification_monitor.py# macOS 알림 모니터
-│   │   │   └── notes_tool.py         # Apple Notes MCP 도구(시뮬레이션)
+│   │   ├── llm_provider.py         # Gemini/Mock Provider
+│   │   ├── decision_engine.py      # 에이전틱 도구선택/계획(JSON)
+│   │   ├── natural_language.py     # NL 파이프라인/개인화
+│   │   ├── prompt_templates.py     # 프롬프트 템플릿
+│   │   ├── prompt_optimizer.py     # 프롬프트 A/B
+│   │   ├── response_generator.py   # 응답 생성 유틸
+│   │   └── mcp_integration.py      # (엔진 측 어댑터)
+│   ├── mcp/                        # MCP 런타임/도구
+│   │   ├── base_tool.py            # Tool 인터페이스/검증/결과
+│   │   ├── registry.py             # 도구 등록/발견/활성화
+│   │   ├── executor.py             # 실행기 + 리소스 제한/히스토리
+│   │   ├── protocol.py             # JSON-RPC 2.0 메시지
+│   │   ├── mcp_integration.py      # 에이전틱→도구 실행 파이프라인
+│   │   ├── apple_tools.py          # Apple 앱 MCP 래퍼 모음
+│   │   ├── apple_client.py         # AppleAppsManager (외부 서버 호출)
+│   │   ├── simple_apple_client.py
+│   │   └── apple_agent_v2.py
+│   ├── tools/                      # 실제 실행 도구
+│   │   ├── calculator_tool.py      # 계산기
+│   │   ├── echo_tool.py            # 에코
 │   │   ├── notion/
-│   │   │   ├── client.py             # Notion API 클라이언트
-│   │   │   ├── todo_tool.py          # Notion 할일 도구
-│   │   │   ├── calendar_tool.py      # Notion 캘린더 도구
-│   │   │   ├── operations.py         # 공통 연산/유틸
-│   │   │   └── nlp_parser.py         # 자연어 → Notion 파라미터 보조
-│   │   └── web_scraper/
-│   │       ├── web_scraper_tool.py   # 범용 스크래퍼 도구
-│   │       ├── scheduler.py          # 스케줄러
-│   │       ├── code_validator.py     # 코드 검증
-│   │       ├── crawler_generator.py  # 크롤러 생성기
-│   │       ├── html_analyzer.py      # HTML 분석
+│   │   │   ├── client.py           # Notion API 클라이언트
+│   │   │   ├── todo_tool.py        # Notion Todo 도구
+│   │   │   ├── calendar_tool.py    # Notion Calendar 도구
+│   │   │   ├── operations.py
+│   │   │   ├── nlp_parser.py
+│   │   │   └── __init__.py
+│   │   ├── apple/
+│   │   │   ├── notification_monitor.py
+│   │   │   ├── auto_responder.py
+│   │   │   ├── notes_tool.py       # Apple Notes(시뮬레이션)
+│   │   │   └── __init__.py
+│   │   └── web_scraper/            # (실험적)
+│   │       ├── web_scraper_tool.py
 │   │       ├── enhanced_inha_crawler.py
 │   │       ├── inha_notice_crawler.py
+│   │       ├── scheduler.py
+│   │       ├── code_validator.py
+│   │       ├── crawler_generator.py
+│   │       ├── html_analyzer.py
 │   │       └── notice_summary_test.py
-│   ├── automation/                   # (현재 비어있음)
+│   ├── memory/                     # 장기기억/RAG/벡터
+│   │   ├── memory_manager.py
+│   │   ├── simple_memory_manager.py
+│   │   ├── vector_store.py
+│   │   ├── rag_engine.py
+│   │   ├── models.py
+│   │   ├── enhanced_models.py
+│   │   └── embedding_provider.py
+│   ├── integration/
+│   │   ├── interfaces.py
+│   │   ├── container.py
+│   │   ├── event_bus.py
+│   │   └── __init__.py
 │   ├── monitoring/
-│   │   ├── dashboard.py              # 메트릭/대시보드
+│   │   ├── dashboard.py
 │   │   └── __init__.py
 │   ├── utils/
-│   │   ├── logger.py                 # 로깅 시스템(loguru)
-│   │   ├── error_handler.py          # 오류/재시도/분류
-│   │   └── performance.py            # 캐시/리소스풀/모니터링
-│   └── data/                         # (현재 비어있음)
-├── tests/                            # (현재 비어있음)
-├── logs/                             # 런타임 로그
-├── data/                             # 로컬 DB/벡터 저장소
-├── scripts/
-│   └── setup-apple-permissions.sh    # macOS 권한 안내 스크립트
-├── docs/
-│   └── apple-mcp-setup.md            # Apple MCP 설정 가이드
+│   │   ├── logger.py               # loguru 기반 로깅
+│   │   ├── error_handler.py        # 오류/재시도/분류
+│   │   ├── performance.py          # 캐시/리소스풀/성능
+│   │   └── __init__.py
+│   └── __init__.py
 ├── external/
-│   └── apple-mcp/                    # Apple MCP 서버(필요 시 설치)
-├── .env
-├── pyproject.toml
-├── requirements.txt
+│   └── apple-mcp/                  # Apple MCP TS 서버(선택)
+├── docs/
+│   └── apple-mcp-setup.md          # Apple MCP 설정 가이드
+├── scripts/
+│   └── setup-apple-permissions.sh  # macOS 권한 안내 스크립트
+├── data/                           # 런타임 DB/벡터 저장소
+├── logs/                           # 런타임 로그
+├── NOTION_SETUP.md
+├── PROJECT_PLAN.md / DEVELOPMENT_LOG.md
+├── requirements.txt / pyproject.toml / .env
 └── README.md
 ```
 
@@ -198,6 +200,138 @@ Personal-AI-Assistant/
 - **Notion API** - 일정/할일 관리
 - **Beautiful Soup / Scrapy** - 웹 스크래핑
 - **Click/Typer** - CLI 프레임워크
+
+## 🧰 사용 가능한 MCP 도구
+
+본 프로젝트에서 AI가 실시간으로 선택·실행하는 MCP 도구들을 정리했습니다. 각 도구는 레지스트리 이름과 지원 액션, 파라미터 규격, 동작 원리와 LLM 사용 규격(예시 JSON)을 함께 제공합니다.
+
+### Notion - Todo 도구 (`notion_todo`)
+- 기능: Notion 할일 데이터베이스에서 할일 생성/수정/삭제/조회/완료 처리
+- 지원 액션: `create`, `update`, `delete`, `get`, `list`, `complete`
+- 주요 파라미터:
+  - `title`(str, 생성/수정), `description`(str), `due_date`(ISO 또는 자연어), `priority`(낮음/중간/높음), `todo_id`(대상 항목), `limit`(조회 개수)
+- 우선순위 표준화: LLM이 `High/Medium/Low/urgent/중요` 등으로 내려도 실행 전 자동으로 한국어 표준값(높음/중간/낮음)으로 정규화됩니다.
+- 날짜 파싱: ISO 권장. 자연어 키워드(오늘/내일/다음 주)는 마감 시각을 23:59로 설정합니다.
+- LLM 사용 규격(예시):
+```json
+{
+  "selected_tools": ["notion_todo"],
+  "execution_plan": [
+    {
+      "tool": "notion_todo",
+      "action": "create",
+      "parameters": {
+        "title": "회의 준비",
+        "due_date": "2025-09-08T09:00+09:00",
+        "priority": "High"
+      }
+    }
+  ]
+}
+```
+
+### Notion - Calendar 도구 (`notion_calendar`)
+- 기능: Notion 캘린더에서 일정 생성/수정/삭제/조회
+- 지원 액션: `create`, `update`, `delete`, `get`, `list`
+- 주요 파라미터:
+  - `title`(str), `start_date`(ISO/자연어), `end_date`(ISO/자연어), `description`(str), `location`(str), `attendees`([]), `priority`(High/Medium/Low), `is_all_day`(bool)
+- 날짜/시간 파싱: “오전/오후 N시”, “HH:MM”, “오늘/내일/다음 주” 등 일부 자연어 지원. ISO(+타임존) 입력 권장.
+- LLM 사용 규격(예시):
+```json
+{
+  "selected_tools": ["notion_calendar"],
+  "execution_plan": [
+    {
+      "tool": "notion_calendar",
+      "action": "create",
+      "parameters": {
+        "title": "팀 미팅",
+        "start_date": "2025-09-08T14:00+09:00",
+        "end_date": "2025-09-08T15:00+09:00",
+        "description": "주간 진행 점검"
+      }
+    }
+  ]
+}
+```
+
+### 계산기 도구 (`calculator`)
+- 기능: 기본 사칙연산
+- 지원 액션: 없음(파라미터 기반 수행)
+- 주요 파라미터: `operation`(+, -, *, /), `a`(number), `b`(number), `precision`(int, 기본 2)
+- LLM 사용 규격(예시):
+```json
+{
+  "selected_tools": ["calculator"],
+  "execution_plan": [
+    {
+      "tool": "calculator",
+      "parameters": {"operation": "+", "a": 2, "b": 3, "precision": 0}
+    }
+  ]
+}
+```
+
+### 에코 도구 (`echo`)
+- 기능: 입력 텍스트를 그대로(옵션 적용) 반환
+- 지원 액션: 없음(파라미터 기반 수행)
+- 주요 파라미터: `message`(str), `delay`(sec, 선택), `uppercase`(bool, 선택)
+- LLM 사용 규격(예시):
+```json
+{
+  "selected_tools": ["echo"],
+  "execution_plan": [
+    {
+      "tool": "echo",
+      "parameters": {"message": "안녕하세요!", "uppercase": false}
+    }
+  ]
+}
+```
+
+### Apple MCP 도구들 (macOS + 외부 서버 필요)
+Apple 앱 제어 도구는 `external/apple-mcp` 서버가 실행 중이어야 합니다. `pai apple install` → `pai apple start -b`로 백그라운드 실행 후 사용하세요.
+
+- 연락처 (`apple_contacts`)
+  - 액션: `search`(name), `find_by_phone`(phone)
+  - 예시:
+  ```json
+  {"selected_tools":["apple_contacts"],"execution_plan":[{"tool":"apple_contacts","action":"search","parameters":{"name":"홍길동"}}]}
+  ```
+
+- 메모 (`apple_notes`)
+  - 액션: `create`(title, body, folder_name), `search`(search_text), `list`(folder_name)
+  - 예시:
+  ```json
+  {"selected_tools":["apple_notes"],"execution_plan":[{"tool":"apple_notes","action":"create","parameters":{"title":"회의 메모","body":"안건 정리","folder_name":"Claude"}}]}
+  ```
+
+- 메시지 (`apple_messages`)
+  - 액션: `send`(phone_number, message), `read`(phone_number, limit), `unread`(limit), `schedule`(phone_number, message, scheduled_time)
+
+- 메일 (`apple_mail`)
+  - 액션: `send`(to, subject, body, cc?, bcc?), `unread`(account?, mailbox?, limit), `search`(search_term, account?, limit), `accounts`, `mailboxes`(account)
+
+- 미리 알림 (`apple_reminders`)
+  - 액션: `create`(name, list_name?, notes?, due_date?), `search`(search_text), `list`, `open`(search_text)
+
+- 캘린더 (`apple_calendar`)
+  - 액션: `create`(title, start_date, end_date, ...), `search`(search_text, from_date?, to_date?, limit?), `list`(from_date?, to_date?, limit?), `open`(event_id)
+
+- 지도 (`apple_maps`)
+  - 액션: `search`(query, limit?), `save`(name, address), `directions`(from_address, to_address, transport_type?), `pin`(name, address), `create_guide`(guide_name), `add_to_guide`(guide_name, address)
+
+> 주의: Apple 도구는 macOS 권한 설정이 필요할 수 있습니다. `pai apple setup-permissions` 참고.
+
+### (참고) 웹 스크래퍼 도구
+- `src/tools/web_scraper`에 실험적 도구가 포함되어 있으나, 현재 MCP 통합 경로에서는 비활성화되어 있습니다.
+
+### 동작 원리와 규격 요약
+- 선택: 에이전틱 의사결정 엔진이 LLM 응답(JSON)으로 `selected_tools`와 `execution_plan`을 생성합니다.
+- 정규화: `MCPIntegration`이 액션/우선순위/날짜 등을 표준 형태로 보정합니다.
+- 실행: `ToolExecutor`가 리소스 제한(시간/메모리/CPU)을 적용해 안전 실행 후 결과/통계를 기록합니다.
+- 요약: 성공/실패 메시지를 사용자가 읽기 쉬운 한국어로 요약하여 반환합니다.
+
 
 ## 🔧 개발
 
