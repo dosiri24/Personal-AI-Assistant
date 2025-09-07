@@ -230,19 +230,34 @@ class AIMessageHandler:
                     # 컨텍스트 조회 실패는 무시하고 계속 진행 (MCP에는 문제 없음)
                     pass
 
-            result_text = await self._mcp.process_user_request(
+            detailed = await self._mcp.process_user_request_detailed(
                 user_message, user_id=user_id, conversation_history=history
             )
-            return AIResponse(
-                content=result_text,
+            content_text = detailed.get("text", "")
+            exec_info = detailed.get("execution") or {}
+            system_notice = None
+            if exec_info and isinstance(exec_info, dict) and exec_info.get("status") in {"success", "error"}:
+                tool = exec_info.get("tool_name") or "tool"
+                action = exec_info.get("action") or "execute"
+                status = exec_info.get("status")
+                status_text = "완료" if status == "success" else "실패"
+                system_notice = f"시스템 안내: {tool} ({action}) 실행 {status_text}"
+
+            meta = {
+                "original_message": user_message,
+                "processed_at": datetime.now().isoformat(),
+                "via": "mcp_integration",
+                "execution": exec_info,
+            }
+            resp = AIResponse(
+                content=content_text,
                 confidence=0.9,
                 reasoning="agentic_mcp",
-                metadata={
-                    "original_message": user_message,
-                    "processed_at": datetime.now().isoformat(),
-                    "via": "mcp_integration"
-                }
+                metadata=meta,
             )
+            # 동적으로 속성 추가: system_notice (호출측에서 사용)
+            setattr(resp, "system_notice", system_notice)
+            return resp
         except Exception as e:
             logger.error(f"MCP 처리 실패, 일반 LLM 응답 시도: {e}")
             # 일반 LLM 답변 (도구 미선택 등)

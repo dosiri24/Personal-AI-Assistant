@@ -42,11 +42,15 @@ async def _run() -> None:
     from src.utils.logger import get_logger
     from src.config import Settings
     from src.discord_bot.bot import DiscordBot
+    from src.mcp.apple_mcp_manager import autostart_if_configured
 
     logger = get_logger("root_launcher")
 
     settings = Settings()
     settings.ensure_directories()
+
+    # Apple MCP 서버 자동 시작 (옵션)
+    mcp_manager = autostart_if_configured(settings)
 
     if not settings.has_valid_discord_token():
         print("❌ Discord 토큰이 설정되지 않았습니다. .env의 DISCORD_BOT_TOKEN을 확인해주세요.")
@@ -64,6 +68,12 @@ async def _run() -> None:
     finally:
         try:
             await bot.stop()
+        except Exception:
+            pass
+        # Apple MCP 자동 시작한 경우 정리
+        try:
+            if mcp_manager:
+                mcp_manager.stop_background()
         except Exception:
             pass
 

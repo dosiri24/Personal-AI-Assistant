@@ -135,6 +135,13 @@ class AgenticDecisionEngine:
                 optional_params=["title", "content", "folder", "search_query", "note_id"]
             ),
             Tool(
+                name="apple_calendar",
+                description="Apple Calendar에 일정을 생성/검색/조회합니다",
+                capabilities=["일정 생성", "일정 검색", "일정 조회", "이벤트 열기"],
+                required_params=["action", "title", "start_date"],
+                optional_params=["end_date", "location", "notes", "is_all_day", "calendar_name", "search_text", "from_date", "to_date", "limit", "event_id"]
+            ),
+            Tool(
                 name="calculator",
                 description="기본 사칙연산 계산을 수행합니다",
                 capabilities=["덧셈", "뺄셈", "곱셈", "나눗셈"],

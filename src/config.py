@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     
     # Apple/macOS 설정
     apple_mcp_server_url: str = Field(default="http://localhost:3000", description="Apple MCP 서버 URL")
+    apple_mcp_autostart: bool = Field(default=False, description="앱 시작 시 Apple MCP 서버 자동 실행 여부")
+    apple_mcp_server_path: str = Field(default="external/apple-mcp", description="Apple MCP 서버 소스 경로")
+    apple_mcp_port: int = Field(default=3001, description="Apple MCP 서버 포트 (자동 실행 시)")
     
     # 데이터베이스 설정
     database_url: str = Field(default="sqlite:///data/personal_ai_assistant.db", description="메인 데이터베이스 URL")

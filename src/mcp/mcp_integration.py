@@ -59,9 +59,31 @@ class MCPIntegration:
         기존 예제 도구 경로(src.mcp.example_tools) 대신 실제 도구 패키지(src.tools)
         를 자동 검색하도록 단순화했습니다.
         """
+        # 1) 일반 도구 자동 발견
         package_path = "src.tools"
         discovered_count = await self.tool_registry.discover_tools(package_path)
         logger.info(f"발견된 도구 수: {discovered_count} (패키지: {package_path})")
+
+        # 2) Apple MCP 도구 수동 등록 (생성자 주입 필요)
+        try:
+            from .apple_tools import register_apple_tools
+            from .apple_client import AppleAppsManager
+
+            apple_manager = AppleAppsManager()
+            apple_tools = register_apple_tools(apple_manager)
+
+            registered = 0
+            for tool in apple_tools:
+                ok = await self.tool_registry.register_tool_instance(tool)
+                if ok:
+                    registered += 1
+
+            if registered > 0:
+                logger.info(f"Apple MCP 도구 등록: {registered}개")
+            else:
+                logger.warning("Apple MCP 도구 등록 0개 (권한/환경 확인 필요)")
+        except Exception as e:
+            logger.warning(f"Apple MCP 도구 등록 건너뜀: {e}")
     
     async def process_user_request(
         self,
@@ -69,11 +91,23 @@ class MCPIntegration:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        """사용자 요청을 처리하여 MCP 도구들을 실행하고 결과를 반환"""
+        """하위 호환용: 상세 실행 결과에서 텍스트만 반환"""
+        detailed = await self.process_user_request_detailed(
+            user_input, user_id=user_id, conversation_history=conversation_history
+        )
+        return detailed.get("text", "")
+
+    async def process_user_request_detailed(
+        self,
+        user_input: str,
+        user_id: str = "default",
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """사용자 요청을 처리하여 텍스트와 실행 메타데이터를 함께 반환"""
         try:
             logger.info(f"사용자 요청 처리 시작: {user_input}")
-            
-            # 1. AI 엔진으로 의사결정
+
+            # 1) 의사결정
             context = DecisionContext(
                 user_message=user_input,
                 user_id=user_id,
@@ -81,48 +115,57 @@ class MCPIntegration:
             )
             decision = await self.decision_engine.make_decision(context)
             logger.info(f"AI 결정: {decision.selected_tools}, 신뢰도: {decision.confidence_score}")
-            
-            if decision.confidence_score < 0.7:
-                # 도구 선택이 모호하면 간결한 안내/질문으로 응답
-                return await self._friendly_reply(user_input, hint="clarify")
-            
-            if not decision.selected_tools:
-                # 잡담/인사/간단 질의 등은 도구 없이 대화로 응답
-                return await self._friendly_reply(user_input)
-            
-            # 첫 번째 선택된 도구 사용
-            tool_name = decision.selected_tools[0]
 
-            # 2. 선택된 도구가 등록되어 있는지 확인
+            if decision.confidence_score < 0.7:
+                text = await self._friendly_reply(user_input, hint="clarify")
+                return {"text": text, "execution": None}
+
+            if not decision.selected_tools:
+                text = await self._friendly_reply(user_input)
+                return {"text": text, "execution": None}
+
+            tool_name = decision.selected_tools[0]
             available_tools = self.tool_registry.list_tools()
             if tool_name not in available_tools:
-                return f"❌ MCP 레지스트리에 '{tool_name}' 도구가 없습니다."
-            
-            # 실행 계획에서 매개변수 추출
-            parameters = {}
+                text = f"❌ MCP 레지스트리에 '{tool_name}' 도구가 없습니다."
+                return {"text": text, "execution": {"tool_name": tool_name, "status": "error", "error": "tool_not_found"}}
+
+            # 2) 파라미터 정규화
+            parameters: Dict[str, Any] = {}
             if decision.execution_plan:
                 parameters = decision.execution_plan[0].get("parameters", {})
-
-            # 도구별 파라미터 정규화 (Mock LLM 호환)
             parameters = self._normalize_parameters(tool_name, parameters)
-            
-            # 3. 도구 실행
+            action = parameters.get("action") if isinstance(parameters, dict) else None
+
+            # 3) 실행
             execution_result = await self.tool_executor.execute_tool(
                 tool_name=tool_name,
                 parameters=parameters
             )
-            
-            # 4. 결과 처리 (자연어 요약)
+
+            # 4) 요약 + 메타
             if execution_result.result.is_success:
                 logger.info(f"도구 실행 성공: {tool_name}")
-                return self._summarize_success(tool_name, parameters, execution_result.result.data)
+                text = self._summarize_success(tool_name, parameters, execution_result.result.data)
+                return {
+                    "text": text,
+                    "execution": {"tool_name": tool_name, "action": action, "status": "success"}
+                }
             else:
                 logger.error(f"도구 실행 실패: {execution_result.result.error_message}")
-                return self._summarize_failure(tool_name, parameters, execution_result.result.error_message)
-                
+                text = self._summarize_failure(tool_name, parameters, execution_result.result.error_message)
+                return {
+                    "text": text,
+                    "execution": {
+                        "tool_name": tool_name,
+                        "action": action,
+                        "status": "error",
+                        "error": execution_result.result.error_message,
+                    },
+                }
         except Exception as e:
             logger.error(f"요청 처리 중 오류: {e}")
-            return f"❌ 시스템 오류: {str(e)}"
+            return {"text": f"❌ 시스템 오류: {str(e)}", "execution": {"status": "error", "error": str(e)}}
 
     async def _friendly_reply(self, user_input: str, hint: Optional[str] = None) -> str:
         """도구 미사용 상황에서 간결한 개인비서 톤의 답변 생성"""
@@ -206,6 +249,17 @@ class MCPIntegration:
             if tool_name == "apple_notes":
                 title = data.get("title") or params.get("title") or "메모"
                 return f"📝 메모를 추가했어요: {title}"
+
+            if tool_name == "apple_calendar":
+                title = data.get("title") or params.get("title") or "일정"
+                start = params.get("start_date")
+                end = params.get("end_date")
+                when = ""
+                if isinstance(start, str) and start:
+                    when = f" — {self._fmt_local_dt(start)}"
+                    if isinstance(end, str) and end:
+                        when = f" — {self._fmt_local_dt(start)} ~ {self._fmt_local_dt(end)}"
+                return f"📅 Apple 캘린더에 일정을 추가했어요: {title}{when}"
 
             if tool_name == "calculator":
                 expr = data.get("expression")
@@ -368,6 +422,22 @@ class MCPIntegration:
                     if isinstance(v, str) and ('Z' not in v and '+' not in v and '-' not in v[10:]):
                         if len(v) >= 16 and 'T' in v:
                             params[key] = v + "+09:00"
+                return params
+            elif tool_name == "apple_calendar" and isinstance(params, dict):
+                # 액션 표준화
+                action = params.get("action", "create")
+                synonyms = {
+                    "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
+                    "search": {"search", "검색", "찾기"},
+                    "list": {"list", "목록", "조회"},
+                    "open": {"open", "열기"}
+                }
+                normalized = "create"
+                for key, words in synonyms.items():
+                    if str(action).lower() in [w.lower() for w in words]:
+                        normalized = key
+                        break
+                params["action"] = normalized
                 return params
             return params
         except Exception:

@@ -347,8 +347,15 @@ class DiscordBot:
                     
                     self.logger.info(f"AI 응답 받음: {ai_response.content[:100]}...")
                     
-                    # AI 응답 전송
+                    # 1) 비서 메시지 전송
                     await message.reply(ai_response.content)
+                    # 2) 시스템 안내(실행 검증) 전송
+                    system_notice = getattr(ai_response, "system_notice", None)
+                    if isinstance(system_notice, str) and system_notice.strip():
+                        try:
+                            await message.reply(f"ℹ️ {system_notice}")
+                        except Exception:
+                            pass
                     
                     # 세션에 AI 응답 저장
                     await self.session_manager.update_conversation_turn(

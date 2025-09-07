@@ -109,6 +109,47 @@ class ToolRegistry:
             except Exception as e:
                 logger.error(f"도구 등록 실패: {e}")
                 return False
+
+    async def register_tool_instance(self, instance: BaseTool) -> bool:
+        """이미 생성된 도구 인스턴스를 레지스트리에 등록
+
+        Apple MCP와 같이 생성자 인자가 필요한 도구들을 주입 방식으로 등록할 때 사용합니다.
+        """
+        async with self._lock:
+            try:
+                metadata = instance.metadata
+                tool_name = metadata.name
+
+                if tool_name in self._tools:
+                    logger.warning(f"도구가 이미 등록되어 있습니다: {tool_name}")
+                    return False
+
+                # 초기화 보장
+                if not instance._initialized:
+                    ok = await instance.initialize()
+                    if not ok:
+                        logger.error(f"도구 초기화 실패: {tool_name}")
+                        return False
+
+                registration = ToolRegistration(tool_class=instance.__class__, instance=instance)
+                self._tools[tool_name] = registration
+
+                # 카테고리/태그 인덱싱
+                if metadata.category not in self._categories:
+                    self._categories[metadata.category] = set()
+                self._categories[metadata.category].add(tool_name)
+
+                for tag in metadata.tags:
+                    if tag not in self._tags:
+                        self._tags[tag] = set()
+                    self._tags[tag].add(tool_name)
+
+                logger.info(f"도구 인스턴스 등록 완료: {tool_name} (카테고리: {metadata.category.value})")
+                await self._notify_listeners("tool_registered", tool_name, metadata)
+                return True
+            except Exception as e:
+                logger.error(f"도구 인스턴스 등록 실패: {e}")
+                return False
     
     async def unregister_tool(self, tool_name: str) -> bool:
         """
