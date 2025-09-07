@@ -35,18 +35,24 @@ class AppleNotesTool(BaseTool):
                     type=ParameterType.STRING,
                     description="수행할 작업",
                     required=True,
-                    choices=["create", "search", "update", "delete"]
+                    choices=["create", "search", "update", "delete", "read"]
+                ),
+                ToolParameter(
+                    name="target_title",
+                    type=ParameterType.STRING,
+                    description="수정/삭제 대상 기존 노트 제목 (note_id가 없을 때 사용)",
+                    required=False
                 ),
                 ToolParameter(
                     name="title",
                     type=ParameterType.STRING,
-                    description="노트 제목",
+                    description="새 노트 제목 또는 변경 후 제목",
                     required=False
                 ),
                 ToolParameter(
                     name="content",
                     type=ParameterType.STRING,
-                    description="노트 내용",
+                    description="노트 내용(없으면 내용은 유지)",
                     required=False
                 ),
                 ToolParameter(
@@ -100,6 +106,8 @@ class AppleNotesTool(BaseTool):
                 return await self._update_note(parameters)
             elif action == "delete":
                 return await self._delete_note(parameters)
+            elif action == "read":
+                return await self._read_note(parameters)
             else:
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
@@ -206,30 +214,91 @@ class AppleNotesTool(BaseTool):
         )
 
     async def _update_note(self, parameters: Dict[str, Any]) -> ToolResult:
-        """노트 업데이트"""
+        """노트 업데이트 (note_id 또는 target_title 기준)"""
+        import subprocess
+
+        target_title = parameters.get("target_title")
         note_id = parameters.get("note_id")
-        title = parameters.get("title")
-        content = parameters.get("content")
-        
-        if not note_id:
+        new_title = parameters.get("title")
+        new_content = parameters.get("content")
+        folder = parameters.get("folder", "Notes")
+
+        if not note_id and not target_title:
             return ToolResult(
                 status=ExecutionStatus.ERROR,
-                error_message="노트 ID가 필요합니다"
+                error_message="업데이트 대상이 없습니다 (note_id 또는 target_title 필요)"
             )
-        
-        logger.info(f"Apple Notes 업데이트 시뮬레이션: {note_id}")
-        
-        return ToolResult(
-            status=ExecutionStatus.SUCCESS,
-            data={
-                "action": "update",
-                "note_id": note_id,
-                "title": title,
-                "content": content,
-                "updated_at": datetime.now().isoformat(),
-                "message": f"Apple Notes 메모를 업데이트했습니다: {title or note_id}"
-            }
-        )
+
+        if not new_title and not new_content:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message="변경할 title 또는 content 중 하나는 필요합니다"
+            )
+
+        def esc(s: str) -> str:
+            return str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+        as_folder = esc(folder)
+        as_match_title = esc(target_title) if target_title else ""
+        as_new_title = esc(new_title) if new_title else ""
+        as_new_content = esc(new_content) if new_content else ""
+
+        # 동적 설정 라인 구성
+        set_title_line = f'set name of theTarget to "{as_new_title}"' if new_title else ''
+        set_body_line = f'set body of theTarget to "{as_new_content}"' if new_content else ''
+
+        # 현재는 note_id 직접 접근이 어렵기 때문에 제목 기반으로 업데이트
+        applescript = f'''
+        tell application "Notes"
+            set targetFolder to folder "{as_folder}" of default account
+            set theNotes to notes of targetFolder
+            set theTarget to missing value
+            repeat with n in theNotes
+                if name of n is "{as_match_title}" then
+                    set theTarget to n
+                    exit repeat
+                end if
+            end repeat
+            if theTarget is missing value then error "Note not found"
+            {set_title_line}
+            {set_body_line}
+        end tell
+        '''
+
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", applescript],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message=f"Notes 업데이트 실패: {result.stderr.strip() or result.stdout.strip()}"
+                )
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "action": "update",
+                    "note_id": note_id,
+                    "title": new_title or target_title,
+                    "content": new_content,
+                    "folder": folder,
+                    "updated_at": datetime.now().isoformat(),
+                    "message": f"Apple Notes 메모를 업데이트했습니다: {new_title or target_title}"
+                }
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message="osascript를 찾을 수 없습니다. macOS 환경인지 확인하세요."
+            )
+        except Exception as e:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"Notes 업데이트 중 예외: {e}"
+            )
 
     async def _delete_note(self, parameters: Dict[str, Any]) -> ToolResult:
         """노트 삭제"""
@@ -252,6 +321,76 @@ class AppleNotesTool(BaseTool):
                 "message": f"Apple Notes 메모를 삭제했습니다: {note_id}"
             }
         )
+
+    async def _read_note(self, parameters: Dict[str, Any]) -> ToolResult:
+        """노트 읽기(제목 기준)"""
+        import subprocess
+
+        target_title = parameters.get("target_title") or parameters.get("title")
+        folder = parameters.get("folder", "Notes")
+
+        if not target_title:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message="읽을 노트의 target_title(또는 title)이 필요합니다"
+            )
+
+        def esc(s: str) -> str:
+            return str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+        as_folder = esc(folder)
+        as_match_title = esc(target_title)
+
+        applescript = f'''
+        tell application "Notes"
+            set targetFolder to folder "{as_folder}" of default account
+            set theNotes to notes of targetFolder
+            set theTarget to missing value
+            repeat with n in theNotes
+                if name of n is "{as_match_title}" then
+                    set theTarget to n
+                    exit repeat
+                end if
+            end repeat
+            if theTarget is missing value then error "Note not found"
+            set tName to name of theTarget
+            set tBody to body of theTarget
+            return tName & "\n\n" & tBody
+        end tell
+        '''
+
+        try:
+            result = subprocess.run(["osascript", "-e", applescript], capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                return ToolResult(
+                    status=ExecutionStatus.ERROR,
+                    error_message=f"Notes 읽기 실패: {result.stderr.strip() or result.stdout.strip()}"
+                )
+            output = result.stdout or ""
+            # 제목과 본문을 분리 (두 줄 공백 기준)
+            parts = output.split("\n\n", 1)
+            title = parts[0].strip() if parts else target_title
+            content = parts[1] if len(parts) > 1 else ""
+            return ToolResult(
+                status=ExecutionStatus.SUCCESS,
+                data={
+                    "action": "read",
+                    "title": title,
+                    "content": content,
+                    "folder": folder,
+                    "read_at": datetime.now().isoformat(),
+                }
+            )
+        except FileNotFoundError:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message="osascript를 찾을 수 없습니다. macOS 환경인지 확인하세요."
+            )
+        except Exception as e:
+            return ToolResult(
+                status=ExecutionStatus.ERROR,
+                error_message=f"Notes 읽기 중 예외: {e}"
+            )
 
     def get_schema(self) -> Dict[str, Any]:
         """도구 스키마 반환"""

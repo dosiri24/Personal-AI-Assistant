@@ -235,6 +235,27 @@ class AIMessageHandler:
             )
             content_text = detailed.get("text", "")
             exec_info = detailed.get("execution") or {}
+            # 최근 메모 컨텍스트 가져오기 (저장만 사용)
+            last_note_ctx = None
+            try:
+                if 'session' in locals() and hasattr(session, 'context'):
+                    last_note_ctx = session.context.get('last_apple_note')
+            except Exception:
+                pass
+
+            # 최근 Apple 노트 컨텍스트 저장(성공 시)
+            try:
+                if isinstance(exec_info, dict) and exec_info.get("status") == "success" and exec_info.get("tool_name") == "apple_notes":
+                    params_used = exec_info.get("parameters") or {}
+                    store_title = None
+                    if isinstance(params_used, dict):
+                        store_title = params_used.get("title") or params_used.get("target_title")
+                    if not store_title and last_note_ctx:
+                        store_title = last_note_ctx.get("title")
+                    if store_title and self.session_manager and isinstance(int_user_id, int):
+                        await self.session_manager.update_user_context(int_user_id, "last_apple_note", {"title": store_title, "folder": (params_used.get("folder") if isinstance(params_used, dict) else None) or "Notes"})
+            except Exception:
+                pass
             system_notice = None
             if exec_info and isinstance(exec_info, dict) and exec_info.get("status") in {"success", "error"}:
                 tool = exec_info.get("tool_name") or "tool"
@@ -292,6 +313,8 @@ class AIMessageHandler:
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_message)
         ]
+
+    # 키워드 기반 파싱/후킹은 사용하지 않습니다 (에이전틱 LLM 판단에 위임)
 
     async def _ensure_mcp(self) -> None:
         if self._mcp is None:

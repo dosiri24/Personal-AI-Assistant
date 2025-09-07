@@ -132,7 +132,7 @@ class AgenticDecisionEngine:
                 description="Apple Notes에 메모를 생성/검색/수정/삭제합니다",
                 capabilities=["메모 생성", "메모 검색", "메모 수정", "메모 삭제"],
                 required_params=["action"],
-                optional_params=["title", "content", "folder", "search_query", "note_id"]
+                optional_params=["title", "content", "folder", "search_query", "note_id", "target_title"]
             ),
             Tool(
                 name="apple_calendar",
@@ -217,6 +217,15 @@ class AgenticDecisionEngine:
 3. 단계별 실행 계획을 수립하세요
 4. 신뢰도를 평가하세요 (0.0-1.0)
 5. 추가 정보가 필요한지 판단하세요
+6. 대화 기록을 적극 활용해 중복 생성을 피하세요. 직전 또는 최근에 생성한 항목(메모/할일/일정)에 대한 변경 요청처럼 해석되면 'create' 대신 'update'·'delete' 등을 선택하세요.
+7. Apple Notes에 대해:
+   - 기존 항목을 수정하려면 'update' 액션을 사용합니다.
+   - note_id가 없으면 'target_title'에 기존 제목을 넣어 대상 메모를 지정합니다(기본 폴더는 'Notes').
+   - 제목을 바꾸려면 'title'에 새 제목을, 본문을 바꾸려면 'content'에 새 내용을 넣으세요.
+   - 예: 직전에 "점심 회의 준비"를 만들었고 사용자가 "점심말고 저녁으로 바꿔줘"라고 하면
+     parameters는 {{"action":"update","target_title":"점심 회의 준비","title":"저녁 회의 준비","folder":"Notes"}}처럼 구성합니다.
+8. Action 값은 각 도구에서 지원하는 표준 키워드를 사용하세요. 예를 들어 apple_notes는 create/update/search/delete, notion_todo는 create/update/delete/get/list/complete 등입니다. 한국어 표현(예: "메모 수정")을 써도 되지만 parameters.action에는 표준 키워드를 넣으세요.
+9. 동일/유사 제목의 새 항목을 추가하지 마세요. 변경 의도가 분명하면 반드시 기존 항목을 지정하여 업데이트하십시오.
 
 **응답 형식 (JSON):**
 ```json
@@ -226,7 +235,7 @@ class AgenticDecisionEngine:
         {{
             "step": 1,
             "tool": "도구명",
-            "action": "수행할 작업",
+            "action": "수행할 작업(예: create/update/delete/list/search/open)",
             "parameters": {{"key": "value"}},
             "description": "단계 설명"
         }}

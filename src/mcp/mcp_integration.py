@@ -137,11 +137,27 @@ class MCPIntegration:
             parameters = self._normalize_parameters(tool_name, parameters)
             action = parameters.get("action") if isinstance(parameters, dict) else None
 
-            # 3) 실행
-            execution_result = await self.tool_executor.execute_tool(
-                tool_name=tool_name,
-                parameters=parameters
-            )
+            # 3) 실행 (apple_notes update 시 내용 자동 보강)
+            if tool_name == "apple_notes" and action == "update" and not parameters.get("content"):
+                try:
+                    # 3-1) 기존 메모 본문 읽기
+                    read_params = {
+                        "action": "read",
+                        "target_title": parameters.get("target_title") or parameters.get("title"),
+                        "folder": parameters.get("folder", "Notes"),
+                    }
+                    read_res = await self.tool_executor.execute_tool("apple_notes", read_params)
+                    if read_res.result.is_success and isinstance(read_res.result.data, dict):
+                        original_body = read_res.result.data.get("content", "")
+                        # 3-2) LLM으로 본문 업데이트 생성
+                        new_body = await self._llm_rewrite_note_body(original_body, user_input)
+                        if new_body:
+                            parameters["content"] = new_body
+                except Exception as _e:
+                    # 읽기/보강 실패 시 콘텐츠 없이 제목만 수정
+                    pass
+
+            execution_result = await self.tool_executor.execute_tool(tool_name=tool_name, parameters=parameters)
 
             # 4) 요약 + 메타
             if execution_result.result.is_success:
@@ -149,7 +165,7 @@ class MCPIntegration:
                 text = self._summarize_success(tool_name, parameters, execution_result.result.data)
                 return {
                     "text": text,
-                    "execution": {"tool_name": tool_name, "action": action, "status": "success"}
+                    "execution": {"tool_name": tool_name, "action": action, "status": "success", "parameters": parameters}
                 }
             else:
                 logger.error(f"도구 실행 실패: {execution_result.result.error_message}")
@@ -161,11 +177,43 @@ class MCPIntegration:
                         "action": action,
                         "status": "error",
                         "error": execution_result.result.error_message,
+                        "parameters": parameters,
                     },
                 }
         except Exception as e:
             logger.error(f"요청 처리 중 오류: {e}")
             return {"text": f"❌ 시스템 오류: {str(e)}", "execution": {"status": "error", "error": str(e)}}
+
+    async def _llm_rewrite_note_body(self, original_body: str, instruction: str) -> Optional[str]:
+        """LLM을 사용해 메모 본문을 수정합니다.
+
+        - 원문을 최대한 보존하면서, instruction에 해당하는 부분만 자연스럽게 반영
+        - 결과는 전체 본문 문자열로만 반환 (포맷/코드블록 금지)
+        """
+        try:
+            system = (
+                "너는 메모 편집 도우미야.\n"
+                "- 원문 본문을 최대한 보존하면서, 사용자의 지시사항만 반영해 업데이트해.\n"
+                "- 중요: 결과는 전체 본문 문자열 하나만 반환해. 코드블록, 마크다운, 설명 금지.\n"
+            )
+            user = (
+                f"[지시] {instruction}\n\n"
+                f"[원문]\n{original_body}"
+            )
+            msgs = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
+            resp = await self.llm_provider.generate_response(msgs, temperature=0.2)
+            content = (resp.content or "").strip()
+            # 코드블록 제거 등 최소 정리
+            if content.startswith("```"):
+                # 추출
+                start = content.find("\n")
+                end = content.rfind("```")
+                if start != -1 and end != -1:
+                    content = content[start+1:end].strip()
+            return content
+        except Exception as e:
+            logger.error(f"메모 본문 LLM 보강 실패: {e}")
+            return None
 
     async def _friendly_reply(self, user_input: str, hint: Optional[str] = None) -> str:
         """도구 미사용 상황에서 간결한 개인비서 톤의 답변 생성"""
@@ -247,7 +295,15 @@ class MCPIntegration:
                 return f"📅 일정을 추가했어요: {title}{when}"
 
             if tool_name == "apple_notes":
-                title = data.get("title") or params.get("title") or "메모"
+                action = (params.get("action") or "create").lower()
+                title = data.get("title") or params.get("title") or params.get("target_title") or "메모"
+                if action == "update":
+                    return f"📝 메모를 수정했어요: {title}"
+                if action == "delete":
+                    return f"🗑️ 메모를 삭제했어요: {title}"
+                if action == "search":
+                    count = (data.get("count") if isinstance(data, dict) else None) or 0
+                    return f"🔎 메모를 {count}건 찾았어요."
                 return f"📝 메모를 추가했어요: {title}"
 
             if tool_name == "apple_calendar":
@@ -317,19 +373,34 @@ class MCPIntegration:
                         b = float(m.group(3))
                         return {"operation": op, "a": a, "b": b, **{k: v for k, v in params.items() if k != "expression"}}
             elif tool_name == "apple_notes" and isinstance(params, dict):
-                action = params.get("action", "create")
-                # 한국어/자유형 액션을 표준으로 매핑
-                synonyms = {
-                    "create": {"create", "add", "make", "메모 생성", "생성", "추가", "작성"},
-                    "search": {"search", "find", "검색"},
-                    "update": {"update", "수정", "편집"},
-                    "delete": {"delete", "remove", "삭제"}
-                }
-                normalized = "create"
-                for key, words in synonyms.items():
-                    if str(action).lower() in [w.lower() for w in words]:
-                        normalized = key
-                        break
+                raw_action = str(params.get("action", "")).strip().lower()
+                # 한국어/자유형 액션을 표준으로 매핑 (부분 포함 허용)
+                create_words = ["create", "add", "make", "메모 생성", "생성", "추가", "작성"]
+                search_words = ["search", "find", "검색"]
+                update_words = ["update", "수정", "편집"]
+                delete_words = ["delete", "remove", "삭제"]
+
+                def match_any(words: list[str]) -> bool:
+                    return any(w.lower() in raw_action for w in words)
+
+                normalized = None
+                if raw_action:
+                    if match_any(update_words):
+                        normalized = "update"
+                    elif match_any(search_words):
+                        normalized = "search"
+                    elif match_any(delete_words):
+                        normalized = "delete"
+                    elif match_any(create_words):
+                        normalized = "create"
+
+                # 힌트 기반 보정: target_title이 있으면 update가 자연스러움
+                if not normalized:
+                    if "target_title" in params or "note_id" in params:
+                        normalized = "update"
+                    else:
+                        normalized = "create"
+
                 params["action"] = normalized
                 # 제목이 없으면 내용 앞부분으로 생성
                 title = params.get("title")

@@ -255,9 +255,8 @@ class SessionManager:
             return
             
         self.is_running = True
-        
-        # 활성 세션 로드
-        await self._load_active_sessions()
+        # 재시작 시 과거 세션을 복원하지 않습니다 (요청에 따라 런타임마다 대화기억 초기화)
+        # 기존 구현의 _load_active_sessions() 호출을 제거합니다.
         
         # 백그라운드 태스크 시작
         self.background_tasks = [
@@ -305,19 +304,9 @@ class SessionManager:
                 else:
                     # 만료된 세션 제거
                     del self.active_sessions[user_id]
-            
-            # 데이터베이스에서 최근 세션 조회
-            session = await self._load_user_session(user_id)
-            
-            if session and not session.is_expired():
-                # 기존 세션 복원
-                session.extend_session(self.default_session_hours)
-                session.status = SessionStatus.ACTIVE
-                self.active_sessions[user_id] = session
-                
-                self.logger.info(f"기존 세션 복원: {user_id}")
-                return session
-            
+
+            # 서버 재시작 시 대화기억을 초기화하기 위해
+            # 과거 데이터베이스 세션을 복원하지 않고 항상 신규 세션을 생성합니다.
             # 새 세션 생성
             session = await self._create_new_session(
                 user_id, user_name, channel_id, channel_name
@@ -415,12 +404,8 @@ class SessionManager:
             session = self.active_sessions.get(user_id)
             if session:
                 return session.get_recent_conversation(turns_limit)
-            
-            # 비활성 세션의 경우 데이터베이스에서 조회
-            session = await self._load_user_session(user_id)
-            if session:
-                return session.get_recent_conversation(turns_limit)
-            
+
+            # 재시작 이후에는 과거 영속 세션을 컨텍스트로 사용하지 않습니다.
             return []
             
         except Exception as e:
