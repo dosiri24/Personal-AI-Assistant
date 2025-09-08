@@ -10,6 +10,7 @@ from typing import Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 
 class Environment(str, Enum):
@@ -74,6 +75,9 @@ class Settings(BaseSettings):
     log_max_file_size: str = Field(default="100MB", description="로그 파일 최대 크기")
     log_backup_count: int = Field(default=5, description="로그 백업 파일 개수")
     
+    # 시간대 설정
+    default_timezone: str = Field(default="Asia/Seoul", description="기본 시간대 (IANA TZ database)")
+    
     # 프로세스 관리 설정
     pid_file_path: str = Field(default="personal_ai_assistant.pid", description="PID 파일 경로")
     daemon_user: Optional[str] = Field(default=None, description="데몬 실행 사용자")
@@ -133,6 +137,13 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """프로덕션 환경 여부 확인"""
         return self.environment == Environment.PRODUCTION
+    
+    def get_tzinfo(self) -> ZoneInfo:
+        """기본 시간대 ZoneInfo 반환"""
+        try:
+            return ZoneInfo(self.default_timezone)
+        except Exception:
+            return ZoneInfo("Asia/Seoul")
 
 
 # 전역 설정 인스턴스

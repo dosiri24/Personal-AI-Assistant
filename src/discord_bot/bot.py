@@ -8,7 +8,7 @@ Discord.py를 사용하여 Discord 서버와 연결하고
 import asyncio
 import discord
 from discord.ext import commands
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Dict
 from collections import deque
 from pathlib import Path
 import sys
@@ -17,17 +17,7 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-import discord
-from discord.ext import commands
 from .ai_handler import get_ai_handler
-import asyncio
-from typing import Optional, Dict, Any
-from pathlib import Path
-import sys
-
-# 프로젝트 루트를 Python 경로에 추가
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from src.utils.logger import get_discord_logger
 from src.config import Settings
@@ -38,8 +28,6 @@ try:
     from .router import MessageRouter
 except ImportError:
     # 개발 중 가져오기 오류 방지
-    MessageParser = None
-    MessageRouter = None
     MessageParser = None
     MessageRouter = None
 

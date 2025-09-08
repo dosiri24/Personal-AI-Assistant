@@ -6,6 +6,7 @@ Notion API와의 통신을 담당하는 클라이언트 클래스입니다.
 """
 
 import asyncio
+import inspect
 import logging
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timezone
@@ -123,10 +124,11 @@ class NotionClient:
                 if self.use_async:
                     await self._wait_for_rate_limit()
                 
-                if asyncio.iscoroutinefunction(operation):
-                    return await operation(*args, **kwargs)
-                else:
-                    return operation(*args, **kwargs)
+                result = operation(*args, **kwargs)
+                # 함수가 코루틴/awaitable을 반환하면 await 처리
+                if inspect.isawaitable(result):
+                    return await result
+                return result
                     
             except APIResponseError as e:
                 error = self._handle_api_error(e)

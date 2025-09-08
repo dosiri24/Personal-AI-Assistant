@@ -5,6 +5,7 @@ AI 엔진과 MCP 도구들을 통합하여 실제 작업을 수행할 수 있도
 """
 
 import asyncio
+import os
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -133,11 +134,23 @@ class MCPIntegration:
             # 2) 파라미터 정규화
             parameters: Dict[str, Any] = {}
             if decision.execution_plan:
-                parameters = decision.execution_plan[0].get("parameters", {})
+                step0 = decision.execution_plan[0]
+                parameters = step0.get("parameters", {})
+                # 실행 계획의 action 필드를 파라미터에 병합하되,
+                # 해당 도구 메타데이터에 action 파라미터가 정의된 경우에만 병합
+                if isinstance(step0, dict):
+                    step_action = step0.get("action")
+                    if step_action and isinstance(parameters, dict) and "action" not in parameters:
+                        meta = self.tool_registry.get_tool_metadata(tool_name)
+                        if meta:
+                            param_names = {p.name for p in meta.parameters}
+                            if "action" in param_names:
+                                parameters["action"] = step_action
             parameters = self._normalize_parameters(tool_name, parameters)
             action = parameters.get("action") if isinstance(parameters, dict) else None
 
-            # 3) 실행 (apple_notes update 시 내용 자동 보강)
+            # 3) 실행 전 컨텍스트 기반 보강
+            # 3-a) apple_notes update 시 내용 자동 보강
             if tool_name == "apple_notes" and action == "update" and not parameters.get("content"):
                 try:
                     # 3-1) 기존 메모 본문 읽기
@@ -157,7 +170,87 @@ class MCPIntegration:
                     # 읽기/보강 실패 시 콘텐츠 없이 제목만 수정
                     pass
 
+            # 3-b) notion_todo update 시 기존 due_date 맥락과 요청을 결합해 KST 기준으로 보강
+            if tool_name == "notion_todo" and action == "update" and isinstance(parameters, dict):
+                try:
+                    todo_id = parameters.get("todo_id") or parameters.get("id")
+                    if todo_id:
+                        curr = await self.tool_executor.execute_tool(
+                            tool_name="notion_todo", parameters={"action": "get", "todo_id": todo_id}
+                        )
+                        if curr.result.is_success and isinstance(curr.result.data, dict):
+                            todo_obj = curr.result.data.get("todo") if isinstance(curr.result.data, dict) else None
+                            curr_due = None
+                            if isinstance(todo_obj, dict):
+                                curr_due = todo_obj.get("due_date")
+                            # 보강 규칙: 사용자가 시간만 제시했거나 TZ 누락 시 기존 날짜+KST로 합성
+                            nd = parameters.get("due_date")
+                            if isinstance(nd, str):
+                                from datetime import datetime
+                                from zoneinfo import ZoneInfo
+                                tz = ZoneInfo(get_settings().default_timezone)
+                                new_dt = None
+                                s = nd.strip()
+                                try:
+                                    # ISO-like 처리 (Z→+00:00)
+                                    iso = s.replace('Z', '+00:00')
+                                    if 'T' in iso or '+' in iso:
+                                        dt = datetime.fromisoformat(iso)
+                                        new_dt = dt if dt.tzinfo else dt.replace(tzinfo=tz)
+                                    else:
+                                        # 'YYYY-MM-DD HH:MM' 같은 경우
+                                        if len(iso) >= 16 and iso[4] == '-' and ':' in iso:
+                                            iso2 = iso.replace(' ', 'T') + "+09:00"
+                                            new_dt = datetime.fromisoformat(iso2)
+                                        else:
+                                            # HH:MM 또는 '9시' 등 시간만 있을 수 있음 → 기존 날짜와 합성
+                                            base_date = None
+                                            if isinstance(curr_due, str) and curr_due:
+                                                try:
+                                                    base_dt = datetime.fromisoformat(curr_due.replace('Z', '+00:00'))
+                                                    if base_dt.tzinfo is None:
+                                                        base_dt = base_dt.replace(tzinfo=tz)
+                                                    base_date = base_dt.date()
+                                                except Exception:
+                                                    pass
+                                            # 간단한 HH:MM 매칭
+                                            import re
+                                            m = re.match(r"^(\d{1,2}):(\d{2})$", s)
+                                            if base_date and m:
+                                                hh, mm = int(m.group(1)), int(m.group(2))
+                                                new_dt = datetime(base_date.year, base_date.month, base_date.day, hh, mm, tzinfo=tz)
+                                except Exception:
+                                    new_dt = None
+                                if new_dt:
+                                    parameters["due_date"] = new_dt.isoformat()
+                                else:
+                                    # 마지막 보정: 'T' 포함인데 TZ 없는 경우만 +09:00 부여
+                                    if 'T' in s and ('Z' not in s and '+' not in s and '-' not in s[10:]):
+                                        parameters["due_date"] = s + "+09:00"
+                except Exception:
+                    pass
+
             execution_result = await self.tool_executor.execute_tool(tool_name=tool_name, parameters=parameters)
+
+            # 3-b) 실패 시 self-repair 루프 (에이전틱 재시도)
+            attempts = int(os.getenv("PAI_SELF_REPAIR_ATTEMPTS", "2"))
+            retry_count = 0
+            while (not execution_result.result.is_success) and retry_count < attempts:
+                retry_count += 1
+                try:
+                    repaired = await self._self_repair_parameters(tool_name, parameters, execution_result.result.error_message)
+                    if repaired and isinstance(repaired, dict):
+                        repaired = self._normalize_parameters(tool_name, repaired)
+                        execution_result = await self.tool_executor.execute_tool(tool_name=tool_name, parameters=repaired)
+                        if execution_result.result.is_success:
+                            parameters = repaired
+                            break
+                        else:
+                            parameters = repaired  # 다음 루프에 전달
+                    else:
+                        break
+                except Exception:
+                    break
 
             # 4) 요약 + 메타
             if execution_result.result.is_success:
@@ -165,7 +258,13 @@ class MCPIntegration:
                 text = self._summarize_success(tool_name, parameters, execution_result.result.data)
                 return {
                     "text": text,
-                    "execution": {"tool_name": tool_name, "action": action, "status": "success", "parameters": parameters}
+                    "execution": {
+                        "tool_name": tool_name,
+                        "action": action,
+                        "status": "success",
+                        "parameters": parameters,
+                        "result_data": execution_result.result.data,
+                    }
                 }
             else:
                 logger.error(f"도구 실행 실패: {execution_result.result.error_message}")
@@ -178,6 +277,7 @@ class MCPIntegration:
                         "status": "error",
                         "error": execution_result.result.error_message,
                         "parameters": parameters,
+                        "result_data": execution_result.result.data if execution_result.result else None,
                     },
                 }
         except Exception as e:
@@ -348,10 +448,16 @@ class MCPIntegration:
         try:
             from datetime import datetime
             from zoneinfo import ZoneInfo
+            from ..config import get_settings
             dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
-            # 사용자가 KST를 쓰는 환경을 가정
-            kst = dt.astimezone(ZoneInfo("Asia/Seoul"))
-            return kst.strftime("%Y-%m-%d %H:%M")
+            # 기본 시간대 적용/변환
+            tz = ZoneInfo(get_settings().default_timezone)
+            if dt.tzinfo is None:
+                # 시간대가 없으면 기본 시간대로 간주
+                local_dt = dt.replace(tzinfo=tz)
+            else:
+                local_dt = dt.astimezone(tz)
+            return local_dt.strftime("%Y-%m-%d %H:%M")
         except Exception:
             return iso_str
 
@@ -362,53 +468,88 @@ class MCPIntegration:
         추가적인 도구별 맵핑이 필요하면 이곳에 확장합니다.
         """
         try:
+            mode = os.getenv("PAI_PARAM_NORMALIZATION_MODE", "minimal").lower()
+
+            # Always canonicalize 'action' for known tools
+            if isinstance(params, dict) and "action" in params and isinstance(params["action"], str):
+                a = params["action"].strip().lower()
+                def _canon(syn: dict[str, set[str]], a: str) -> str:
+                    for key, words in syn.items():
+                        if a in {w.lower() for w in words}:
+                            return key
+                    return params["action"]
+                if tool_name == "notion_todo":
+                    params["action"] = _canon({
+                        "create": {"create", "추가", "생성", "등록", "만들어", "만들다", "할일 추가"},
+                        "update": {"update", "수정", "변경", "편집"},
+                        "delete": {"delete", "삭제", "제거"},
+                        "get": {"get", "조회", "확인", "보기"},
+                        "list": {"list", "목록", "리스트"},
+                        "complete": {"complete", "완료", "끝"},
+                    }, a)
+                elif tool_name == "notion_calendar":
+                    params["action"] = _canon({
+                        "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
+                        "update": {"update", "수정", "변경", "편집", "일정 수정"},
+                        "delete": {"delete", "삭제", "제거", "일정 삭제"},
+                        "get": {"get", "조회", "확인", "보기"},
+                        "list": {"list", "목록", "리스트"},
+                    }, a)
+                elif tool_name == "apple_notes":
+                    params["action"] = _canon({
+                        "create": {"create", "add", "make", "메모 생성", "생성", "추가", "작성"},
+                        "search": {"search", "find", "검색"},
+                        "update": {"update", "수정", "편집"},
+                        "delete": {"delete", "remove", "삭제"},
+                        "read": {"read", "열람", "읽기"},
+                    }, a)
+
+            if mode == "off":
+                return params
             if tool_name == "calculator" and isinstance(params, dict):
-                expr = params.get("expression")
-                if isinstance(expr, str):
-                    import re
-                    m = re.search(r"(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)", expr)
-                    if m:
-                        a = float(m.group(1))
-                        op = m.group(2)
-                        b = float(m.group(3))
-                        return {"operation": op, "a": a, "b": b, **{k: v for k, v in params.items() if k != "expression"}}
+                # minimal: calculator는 보정하지 않음 (LLM 생성 그대로)
+                if mode == "full":
+                    expr = params.get("expression")
+                    if isinstance(expr, str):
+                        import re
+                        m = re.search(r"(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)", expr)
+                        if m:
+                            a = float(m.group(1))
+                            op = m.group(2)
+                            b = float(m.group(3))
+                            return {"operation": op, "a": a, "b": b, **{k: v for k, v in params.items() if k != "expression"}}
             elif tool_name == "apple_notes" and isinstance(params, dict):
-                raw_action = str(params.get("action", "")).strip().lower()
-                # 한국어/자유형 액션을 표준으로 매핑 (부분 포함 허용)
-                create_words = ["create", "add", "make", "메모 생성", "생성", "추가", "작성"]
-                search_words = ["search", "find", "검색"]
-                update_words = ["update", "수정", "편집"]
-                delete_words = ["delete", "remove", "삭제"]
+                if mode == "full":
+                    raw_action = str(params.get("action", "")).strip().lower()
+                    create_words = ["create", "add", "make", "메모 생성", "생성", "추가", "작성"]
+                    search_words = ["search", "find", "검색"]
+                    update_words = ["update", "수정", "편집"]
+                    delete_words = ["delete", "remove", "삭제"]
 
-                def match_any(words: list[str]) -> bool:
-                    return any(w.lower() in raw_action for w in words)
+                    def match_any(words: list[str]) -> bool:
+                        return any(w.lower() in raw_action for w in words)
 
-                normalized = None
-                if raw_action:
-                    if match_any(update_words):
-                        normalized = "update"
-                    elif match_any(search_words):
-                        normalized = "search"
-                    elif match_any(delete_words):
-                        normalized = "delete"
-                    elif match_any(create_words):
-                        normalized = "create"
-
-                # 힌트 기반 보정: target_title이 있으면 update가 자연스러움
-                if not normalized:
-                    if "target_title" in params or "note_id" in params:
-                        normalized = "update"
-                    else:
-                        normalized = "create"
-
-                params["action"] = normalized
-                # 제목이 없으면 내용 앞부분으로 생성
-                title = params.get("title")
-                content = params.get("content") or ""
-                if not title:
-                    params["title"] = content[:30] if content else "새 메모"
+                    normalized = None
+                    if raw_action:
+                        if match_any(update_words):
+                            normalized = "update"
+                        elif match_any(search_words):
+                            normalized = "search"
+                        elif match_any(delete_words):
+                            normalized = "delete"
+                        elif match_any(create_words):
+                            normalized = "create"
+                    if not normalized:
+                        if "target_title" in params or "note_id" in params:
+                            normalized = "update"
+                        else:
+                            normalized = "create"
+                    params["action"] = normalized
+                # minimal: 기본값/폴더만 보정
                 if "folder" not in params:
                     params["folder"] = "Notes"
+                if not params.get("title") and params.get("content"):
+                    params["title"] = str(params.get("content"))[:30] or "새 메모"
                 return params
             elif tool_name == "echo" and isinstance(params, dict):
                 # flash 계열이 'text'로 내려줄 수 있어 'message'로 보정
@@ -420,44 +561,44 @@ class MCPIntegration:
                 # 여분 키 제거는 도구가 무시하지만, 명시적으로 유지/정리 가능
                 return params
             elif tool_name == "notion_todo" and isinstance(params, dict):
-                # 액션 표준화
-                action = params.get("action", "create")
-                synonyms = {
-                    "create": {"create", "추가", "생성", "등록", "만들어", "만들다", "할일 추가"},
-                    "update": {"update", "수정", "변경", "편집"},
-                    "delete": {"delete", "삭제", "제거"},
-                    "get": {"get", "조회", "확인", "보기"},
-                    "list": {"list", "목록", "리스트"},
-                    "complete": {"complete", "완료", "끝"}
-                }
-                normalized = "create"
-                for key, words in synonyms.items():
-                    if str(action).lower() in [w.lower() for w in words]:
-                        normalized = key
-                        break
-                params["action"] = normalized
+                if mode == "full":
+                    # 액션 표준화
+                    action = params.get("action", "create")
+                    synonyms = {
+                        "create": {"create", "추가", "생성", "등록", "만들어", "만들다", "할일 추가"},
+                        "update": {"update", "수정", "변경", "편집"},
+                        "delete": {"delete", "삭제", "제거"},
+                        "get": {"get", "조회", "확인", "보기"},
+                        "list": {"list", "목록", "리스트"},
+                        "complete": {"complete", "완료", "끝"}
+                    }
+                    normalized = "create"
+                    for key, words in synonyms.items():
+                        if str(action).lower() in [w.lower() for w in words]:
+                            normalized = key
+                            break
+                    params["action"] = normalized
 
-                # 우선순위 표준화 (영문/한글/동의어 허용 → 한국어: 높음/중간/낮음)
-                pr = params.get("priority")
-                if isinstance(pr, str) and pr.strip():
-                    pr_l = pr.strip().lower()
-                    high_set = {"high", "높음", "높다", "상", "urgent", "중요", "매우높음", "very high", "긴급"}
-                    medium_set = {"medium", "normal", "중간", "보통", "일반", "중"}
-                    low_set = {"low", "낮음", "낮다", "하", "minor", "low priority", "low-priority"}
-                    if pr_l in [s.lower() for s in high_set]:
-                        params["priority"] = "높음"
-                    elif pr_l in [s.lower() for s in medium_set]:
-                        params["priority"] = "중간"
-                    elif pr_l in [s.lower() for s in low_set]:
-                        params["priority"] = "낮음"
-                    else:
-                        # 문장형 입력 처리 (예: "very_high", "매우 높음")
-                        if any(k in pr_l for k in ["very", "매우", "high", "urgent", "중요"]):
+                    # 우선순위 표준화
+                    pr = params.get("priority")
+                    if isinstance(pr, str) and pr.strip():
+                        pr_l = pr.strip().lower()
+                        high_set = {"high", "높음", "높다", "상", "urgent", "중요", "매우높음", "very high", "긴급"}
+                        medium_set = {"medium", "normal", "중간", "보통", "일반", "중"}
+                        low_set = {"low", "낮음", "낮다", "하", "minor", "low priority", "low-priority"}
+                        if pr_l in [s.lower() for s in high_set]:
                             params["priority"] = "높음"
-                        elif any(k in pr_l for k in ["low", "낮"]):
+                        elif pr_l in [s.lower() for s in medium_set]:
+                            params["priority"] = "중간"
+                        elif pr_l in [s.lower() for s in low_set]:
                             params["priority"] = "낮음"
                         else:
-                            params["priority"] = "중간"
+                            if any(k in pr_l for k in ["very", "매우", "high", "urgent", "중요"]):
+                                params["priority"] = "높음"
+                            elif any(k in pr_l for k in ["low", "낮"]):
+                                params["priority"] = "낮음"
+                            else:
+                                params["priority"] = "중간"
                 # due_date ISO 보정(로컬 타임존 KST +09:00 적용)
                 dd = params.get("due_date")
                 if isinstance(dd, str) and ('Z' not in dd and '+' not in dd and '-' not in dd[10:]):
@@ -466,28 +607,28 @@ class MCPIntegration:
                         params["due_date"] = dd + "+09:00"
                 return params
             elif tool_name == "notion_calendar" and isinstance(params, dict):
-                # 액션 표준화
-                action = params.get("action", "create")
-                synonyms = {
-                    "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
-                    "update": {"update", "수정", "변경", "편집", "일정 수정"},
-                    "delete": {"delete", "삭제", "제거", "일정 삭제"},
-                    "get": {"get", "조회", "확인", "보기"},
-                    "list": {"list", "목록", "리스트"}
-                }
-                normalized = "create"
-                for key, words in synonyms.items():
-                    if str(action).lower() in [w.lower() for w in words]:
-                        normalized = key
-                        break
-                params["action"] = normalized
                 # 날짜 키 표준화
                 if "start_date" not in params:
                     if "date" in params:
                         params["start_date"] = params.pop("date")
                     elif "start" in params:
                         params["start_date"] = params.pop("start")
-                # ISO 보정 (로컬 타임존 KST +09:00 적용)
+                # date + time → start_date 결합
+                start_date = params.get("start_date")
+                time_part = params.get("time")
+                if isinstance(start_date, str) and isinstance(time_part, str):
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
+                    from ..config import get_settings
+                    tz = ZoneInfo(get_settings().default_timezone)
+                    if 'T' not in start_date:
+                        try:
+                            naive = datetime.fromisoformat(f"{start_date}T{time_part}")
+                            params["start_date"] = naive.replace(tzinfo=tz).isoformat()
+                        except Exception:
+                            params["start_date"] = f"{start_date}T{time_part}+09:00"
+                    params.pop("time", None)
+                # ISO 보정 (기본 시간대)
                 for key in ("start_date", "end_date"):
                     v = params.get(key)
                     if isinstance(v, str) and ('Z' not in v and '+' not in v and '-' not in v[10:]):
@@ -495,24 +636,60 @@ class MCPIntegration:
                             params[key] = v + "+09:00"
                 return params
             elif tool_name == "apple_calendar" and isinstance(params, dict):
-                # 액션 표준화
-                action = params.get("action", "create")
-                synonyms = {
-                    "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
-                    "search": {"search", "검색", "찾기"},
-                    "list": {"list", "목록", "조회"},
-                    "open": {"open", "열기"}
-                }
-                normalized = "create"
-                for key, words in synonyms.items():
-                    if str(action).lower() in [w.lower() for w in words]:
-                        normalized = key
-                        break
-                params["action"] = normalized
+                if mode == "full":
+                    action = params.get("action", "create")
+                    synonyms = {
+                        "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
+                        "search": {"search", "검색", "찾기"},
+                        "list": {"list", "목록", "조회"},
+                        "open": {"open", "열기"}
+                    }
+                    normalized = "create"
+                    for key, words in synonyms.items():
+                        if str(action).lower() in [w.lower() for w in words]:
+                            normalized = key
+                            break
+                    params["action"] = normalized
                 return params
             return params
         except Exception:
             return params
+
+    async def _self_repair_parameters(self, tool_name: str, params: Dict[str, Any], error_message: Optional[str]) -> Optional[Dict[str, Any]]:
+        """LLM을 사용해 파라미터를 자기교정하여 재시도할 수 있도록 합니다."""
+        try:
+            metadata = self.tool_registry.get_tool_metadata(tool_name)
+            schema_desc = ""
+            if metadata:
+                schema_desc = json.dumps({
+                    "name": metadata.name,
+                    "parameters": [p.to_dict() for p in metadata.parameters]
+                }, ensure_ascii=False)
+            system = (
+                "너는 MCP 도구 실행을 도와주는 AI야.\n"
+                "- 아래 도구 스키마와 이전 파라미터, 에러 메시지를 참고해 올바른 JSON 파라미터를 생성해.\n"
+                "- 출력은 JSON 하나만, 코드블록 없이.\n"
+            )
+            user = (
+                f"[도구] {tool_name}\n[스키마]\n{schema_desc}\n\n"
+                f"[이전 파라미터]\n{json.dumps(params, ensure_ascii=False)}\n\n"
+                f"[에러]\n{error_message or ''}\n\n"
+                "요구사항: 유효한 파라미터 JSON만 반환하고, 누락값을 보완해줘."
+            )
+            msgs = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
+            resp = await self.llm_provider.generate_response(msgs, temperature=0.1, max_tokens=800)
+            content = resp.content.strip()
+            if content.startswith("```"):
+                start = content.find("\n")
+                end = content.rfind("```")
+                if start != -1 and end != -1:
+                    content = content[start+1:end].strip()
+            repaired = json.loads(content)
+            if isinstance(repaired, dict):
+                return repaired
+            return None
+        except Exception:
+            return None
     
     async def get_available_tools(self) -> List[Dict[str, Any]]:
         """사용 가능한 도구 목록 반환"""

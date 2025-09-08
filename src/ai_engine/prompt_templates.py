@@ -4,7 +4,7 @@ AI 에이전트의 다양한 작업에 대한 프롬프트 템플릿 관리
 """
 
 import json
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -103,11 +103,15 @@ $memory_context
 2. 필요한 정보나 도구를 식별하세요
 3. 단계별 작업 계획을 수립하세요
 4. 예상 소요시간과 난이도를 평가하세요
+5. intent_category를 아래 중 하나로 분류하세요:
+   ["task_management","information_search","web_scraping","system_control","communication","file_management","automation","query","unclear"]
+6. 긴급도(urgency)를 아래 중 하나로 지정하세요: ["immediate","high","medium","low"]
 
 응답 형식:
 ```json
 {
     "intent": "명령의 주요 의도",
+    "intent_category": "위 분류 중 하나",
     "goal": "달성하고자 하는 목표",
     "required_tools": ["필요한 도구 목록"],
     "action_plan": [
@@ -115,6 +119,7 @@ $memory_context
     ],
     "difficulty": "easy|medium|hard",
     "confidence": 0.95,
+    "urgency": "immediate|high|medium|low",
     "clarification_needed": ["추가로 필요한 정보"]
 }
 ```""",
@@ -150,17 +155,25 @@ $context
 3. 실행 속도와 효율성
 4. 사용자 경험과 편의성
 
-가장 적합한 도구를 선택하고 사용법을 설명해주세요.
+가장 적합한 도구를 선택하고, 필요한 경우 action과 기본 parameters를 제시하세요.
 
-응답 형식:
+응답 형식(JSON만 출력):
 ```json
 {
-    "selected_tool": "선택된 도구명",
-    "reason": "선택 이유",
-    "usage_plan": "구체적 사용 계획",
-    "parameters": {"매개변수": "값"},
-    "fallback_tools": ["대안 도구들"],
-    "expected_result": "예상 결과"
+  "tool_needed": true,
+  "selected_tool": "도구명",
+  "action": "액션명(예: create/update/search)",
+  "reasoning": "선택 이유",
+  "confidence": 0.9,
+  "parameters": {"key": "value"}
+}
+```
+
+도구가 불필요하면 아래 형식을 사용하세요:
+```json
+{
+  "tool_needed": false,
+  "reasoning": "이유"
 }
 ```""",
             description="작업에 최적화된 도구를 선택하는 템플릿",
@@ -515,6 +528,57 @@ class ContextAwarePromptManager(PromptManager):
     def _initialize_specialized_templates(self):
         """특화된 템플릿 초기화"""
         
+        # 컨텍스트 인식 작업 계획 템플릿 (누락 보완)
+        self.add_template(PromptTemplate(
+            name="context_aware_planning",
+            type=PromptType.CONTEXT_AWARE_PLANNING,
+            template="""당신은 개인 AI 비서입니다. 사용자 요청과 최근 대화/선호도를 반영하여 최적의 작업 계획을 수립하세요.
+
+[사용자 명령]
+$user_command
+
+[사용자 컨텍스트]
+$user_context
+
+[시스템 가능 기능]
+$system_capabilities
+
+[최근 대화 히스토리]
+$conversation_history
+
+[계획 수립 지침]
+1. 목표를 한 문장으로 명확히 정의
+2. 필요한 도구와 데이터 의존성을 식별
+3. 실행 가능한 단계로 분해(각 단계에 도구/예상시간/성공조건 포함)
+4. 리스크/불확실성 및 명확화 필요 정보를 표기
+5. 전체 난이도와 신뢰도를 추정
+
+응답 형식:
+```json
+{
+  "goal": "달성 목표",
+  "steps": [
+    {
+      "step": 1,
+      "action": "구체적 행동",
+      "tool": "사용할 도구 또는 manual",
+      "expected_time": "예상 시간(분)",
+      "success_criteria": "완료 판단 기준"
+    }
+  ],
+  "required_tools": ["필요 도구 목록"],
+  "dependencies": ["의존 관계 또는 선행 작업"],
+  "estimated_duration": "총 예상 소요 시간",
+  "difficulty": "easy|medium|hard",
+  "confidence": 0.8,
+  "clarification_needed": ["추가로 필요한 정보"]
+}
+```""",
+            description="사용자/대화 컨텍스트를 반영한 작업 계획 수립 템플릿",
+            required_variables=["user_command"],
+            optional_variables=["user_context", "system_capabilities", "conversation_history"]
+        ))
+
         # 일정 관리 특화 템플릿
         self.add_template(PromptTemplate(
             name="schedule_management",

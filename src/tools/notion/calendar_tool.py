@@ -6,7 +6,8 @@ Notion 캘린더 데이터베이스를 관리하는 MCP 도구입니다.
 """
 
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field
 import re
@@ -164,19 +165,23 @@ class CalendarTool(BaseTool):
     def _parse_datetime(self, date_str: str) -> datetime:
         """자연어나 ISO 형식의 날짜/시간을 파싱"""
         if not date_str:
-            return datetime.now(timezone.utc)
+            tz = ZoneInfo(self.settings.default_timezone)
+            return datetime.now(tz)
         
         # ISO 형식 시도
         try:
             # 'Z' 접미사 처리
             if date_str.endswith('Z'):
                 date_str = date_str[:-1] + '+00:00'
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo(self.settings.default_timezone))
+            return dt
         except ValueError:
             pass
         
         # 자연어 파싱 (간단한 패턴들)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(ZoneInfo(self.settings.default_timezone))
         date_str_lower = date_str.lower().strip()
         
         # 오늘, 내일, 모레

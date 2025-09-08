@@ -11,6 +11,7 @@ from loguru import logger
 
 # AI 엔진 관련 import
 from ..ai_engine.llm_provider import GeminiProvider, ChatMessage
+from ..ai_engine.prompt_templates import PromptManager
 from ..mcp.mcp_integration import MCPIntegration
 from ..config import Settings
 
@@ -19,7 +20,6 @@ from ..mcp.base_tool import ExecutionStatus
 from ..tools.notion.todo_tool import TodoTool
 from ..tools.notion.calendar_tool import CalendarTool
 from ..tools.calculator_tool import CalculatorTool
-from ..tools.echo_tool import EchoTool
 # from ..tools.web_scraper.web_scraper_tool import WebScraperTool  # 일시적으로 비활성화
 try:
     from ..tools.apple.auto_responder import IntelligentAutoResponder
@@ -59,7 +59,7 @@ class AIMessageHandler:
         self.notion_todo_tool: Optional[TodoTool] = None
         self.notion_calendar_tool: Optional[CalendarTool] = None
         self.calculator_tool: Optional[CalculatorTool] = None
-        self.echo_tool: Optional[EchoTool] = None
+        # echo 도구 제거 (에이전틱 일반 응답으로 대체)
         # self.web_scraper_tool: Optional[WebScraperTool] = None  # 일시적으로 비활성화
         self.apple_auto_responder: Optional[Any] = None
         self.apple_notification_monitor: Optional[Any] = None
@@ -119,14 +119,7 @@ class AIMessageHandler:
             self.tools_status["calculator"] = f"❌ 실패: {str(e)}"
             logger.error(f"❌ Calculator 도구 초기화 실패: {e}")
         
-        # 4. Echo Tool
-        try:
-            self.echo_tool = EchoTool()
-            self.tools_status["echo"] = "✅ 연결됨"
-            logger.info("✅ Echo 도구 초기화 완료")
-        except Exception as e:
-            self.tools_status["echo"] = f"❌ 실패: {str(e)}"
-            logger.error(f"❌ Echo 도구 초기화 실패: {e}")
+        # 4. Echo Tool 제거됨
         
         # 5. Web Scraper Tool (일시적으로 비활성화)
         # try:
@@ -230,6 +223,21 @@ class AIMessageHandler:
                     # 컨텍스트 조회 실패는 무시하고 계속 진행 (MCP에는 문제 없음)
                     pass
 
+            # 최근 Notion Todo 컨텍스트를 LLM이 활용할 수 있도록 대화 히스토리에 주입 (KST due_date 포함)
+            try:
+                if int_user_id is not None and getattr(self, "session_manager", None):
+                    sess = self.session_manager.active_sessions.get(int_user_id)  # type: ignore[attr-defined]
+                    if sess and isinstance(sess.context, dict):
+                        last_todo = sess.context.get("last_notion_todo")
+                        if isinstance(last_todo, dict):
+                            lt_title = last_todo.get("title")
+                            lt_id = last_todo.get("todo_id")
+                            lt_due = last_todo.get("due_date")
+                            ctx_text = f"[context] last_notion_todo: title={lt_title}, todo_id={lt_id}, due_date={lt_due} (KST)"
+                            history.append({"role": "assistant", "content": ctx_text})
+            except Exception:
+                pass
+
             detailed = await self._mcp.process_user_request_detailed(
                 user_message, user_id=user_id, conversation_history=history
             )
@@ -254,6 +262,31 @@ class AIMessageHandler:
                         store_title = last_note_ctx.get("title")
                     if store_title and self.session_manager and isinstance(int_user_id, int):
                         await self.session_manager.update_user_context(int_user_id, "last_apple_note", {"title": store_title, "folder": (params_used.get("folder") if isinstance(params_used, dict) else None) or "Notes"})
+            except Exception:
+                pass
+            # 최근 Notion Todo 컨텍스트 저장(성공 시)
+            try:
+                if isinstance(exec_info, dict) and exec_info.get("status") == "success" and exec_info.get("tool_name") == "notion_todo":
+                    params_used = exec_info.get("parameters") or {}
+                    result_data = exec_info.get("result_data") or {}
+                    title = None
+                    todo_id = None
+                    due_date = None
+                    if isinstance(params_used, dict):
+                        title = params_used.get("title") or params_used.get("target_title")
+                        due_date = params_used.get("due_date")
+                    if isinstance(result_data, dict):
+                        todo_id = result_data.get("todo_id") or result_data.get("id")
+                        if not title:
+                            title = result_data.get("title")
+                        if not due_date:
+                            due_date = result_data.get("due_date")
+                    if (title or todo_id) and self.session_manager and isinstance(int_user_id, int):
+                        await self.session_manager.update_user_context(
+                            int_user_id,
+                            "last_notion_todo",
+                            {"title": title, "todo_id": todo_id, "due_date": due_date}
+                        )
             except Exception:
                 pass
             system_notice = None
@@ -321,75 +354,29 @@ class AIMessageHandler:
             self._mcp = MCPIntegration()
             await self._mcp.initialize()
     
-    async def _check_and_execute_tools(self, user_message: str) -> Optional[str]:
-        """에이전틱 AI 기반 도구 선택 및 실행"""
-        
-        # 도구 상태 확인 명령어는 즉시 처리
-        message_lower = user_message.lower()
-        if any(keyword in message_lower for keyword in ["도구상태", "tool status", "도구확인", "연결상태"]):
-            return self._get_tools_status_report()
-        
-        # 에이전틱 AI 방식: LLM이 직접 자연어를 이해하고 도구 선택
-        if not self.llm_provider:
-            return "❌ AI 엔진이 초기화되지 않아 도구 선택이 불가능합니다."
-        
-        try:
-            # AI가 자연어를 분석하고 적절한 도구와 액션을 결정
-            tool_decision = await self._make_agentic_tool_decision(user_message)
-            
-            if not tool_decision:
-                return None  # AI가 도구 사용이 불필요하다고 판단
-            
-            # AI가 선택한 도구 실행
-            return await self._execute_selected_tool(tool_decision, user_message)
-            
-        except Exception as e:
-            logger.error(f"에이전틱 도구 선택 중 오류: {e}")
-            return f"❌ AI 도구 선택 중 오류가 발생했습니다: {e}"
+    # 키워드 기반 도구 상태 질의 제거 (에이전틱 판단/명령어 기반으로만 동작)
 
     async def _make_agentic_tool_decision(self, user_message: str) -> Optional[Dict[str, Any]]:
         """AI가 자연어를 분석하여 도구 선택을 결정"""
         
-        # LLM provider가 초기화되지 않은 경우 처리
+        # LLM provider가 초기화되지 않은 경우 처리 (키워드 폴백 제거)
         if not self.llm_provider:
-            logger.warning("LLM provider가 없어 간단한 키워드 매칭으로 폴백")
-            return self._fallback_tool_decision(user_message)
+            logger.warning("LLM provider 미가용: 도구 선택 생략")
+            return None
         
         # 사용 가능한 도구 목록 생성
         available_tools = self._get_available_tools_info()
-        
-        # AI에게 도구 선택을 요청하는 프롬프트
-        tool_selection_prompt = f"""
-당신은 지능형 개인 비서입니다. 사용자의 자연어 요청을 분석하여 적절한 도구를 선택하고 실행해야 합니다.
 
-**사용자 요청**: "{user_message}"
-
-**사용 가능한 도구들**:
-{available_tools}
-
-**에이전틱 분석 지침**:
-1. 사용자의 의도를 정확히 파악하세요
-2. 요청을 완수하는데 필요한 도구가 있는지 판단하세요
-3. 도구가 필요하다면 가장 적절한 도구와 액션을 선택하세요
-4. 도구가 불필요하다면 null을 반환하세요
-
-**응답 형식 (JSON)**:
-도구가 필요한 경우:
-{{
-    "tool_needed": true,
-    "selected_tool": "도구명",
-    "action": "액션명",
-    "reasoning": "선택 이유",
-    "confidence": 0.95
-}}
-
-도구가 불필요한 경우:
-{{
-    "tool_needed": false,
-    "reasoning": "도구가 필요하지 않은 이유"
-}}
-
-응답:"""
+        # PromptManager 템플릿을 사용하여 프롬프트 생성
+        pm = PromptManager()
+        tool_selection_prompt = pm.render_template(
+            "tool_selection",
+            {
+                "task_goal": user_message,
+                "available_tools": available_tools,
+                "context": "Discord"
+            }
+        )
 
         try:
             messages = [
@@ -404,7 +391,7 @@ class AIMessageHandler:
                 logger.warning("LLM provider에 generate_response 메서드가 없음")
                 return self._fallback_tool_decision(user_message)
             
-            # JSON 응답 파싱
+            # JSON 응답 파싱 (템플릿 표준 또는 유사 형식 모두 허용)
             import json
             import re
             
@@ -416,59 +403,39 @@ class AIMessageHandler:
                 
                 logger.info(f"AI 도구 선택 결정: {decision}")
                 
-                if decision.get("tool_needed", False):
-                    return decision
-                else:
+                # 표준 형식
+                if "tool_needed" in decision:
+                    if decision.get("tool_needed", False):
+                        return decision
                     logger.info(f"AI가 도구 사용 불필요로 판단: {decision.get('reasoning', '')}")
                     return None
+
+                # 호환 형식(selected_tool만 존재) → 기본 변환
+                if "selected_tool" in decision:
+                    mapped = {
+                        "tool_needed": True,
+                        "selected_tool": decision.get("selected_tool"),
+                        "action": decision.get("action")
+                                  or (decision.get("parameters", {}) or {}).get("action")
+                                  or "execute",
+                        "reasoning": decision.get("reason")
+                                    or decision.get("usage_plan")
+                                    or decision.get("expected_result")
+                                    or "",
+                        "confidence": decision.get("confidence", 0.75),
+                    }
+                    return mapped
+                
+                logger.warning("AI 응답 JSON에서 필요한 키를 찾지 못했습니다")
+                return self._fallback_tool_decision(user_message)
             else:
                 logger.warning("AI 응답에서 JSON을 찾을 수 없습니다")
-                return self._fallback_tool_decision(user_message)
+                return None
                 
         except Exception as e:
             logger.error(f"AI 도구 선택 결정 중 오류: {e}")
-            return self._fallback_tool_decision(user_message)
+            return None
 
-    def _fallback_tool_decision(self, user_message: str) -> Optional[Dict[str, Any]]:
-        """LLM이 사용 불가능할 때 기본 키워드 매칭으로 폴백"""
-        message_lower = user_message.lower()
-        
-        # Apple Notes 관련 키워드를 먼저 체크
-        if any(keyword in message_lower for keyword in ["애플메모", "apple notes", "애플 메모", "메모장에"]):
-            return {
-                "tool_needed": True,
-                "selected_tool": "apple_notes",
-                "action": "create",
-                "reasoning": "키워드 매칭 - Apple Notes 메모 요청",
-                "confidence": 0.8
-            }
-        # Notion Todo 관련 키워드
-        elif any(keyword in message_lower for keyword in ["메모", "할일", "todo", "기록", "저장", "추가", "남겨"]):
-            return {
-                "tool_needed": True,
-                "selected_tool": "notion_todo",
-                "action": "create",
-                "reasoning": "키워드 매칭 - 메모/할일 관련 요청",
-                "confidence": 0.7
-            }
-        elif any(keyword in message_lower for keyword in ["계산", "+", "-", "*", "/", "더하기", "빼기", "곱하기", "나누기"]):
-            return {
-                "tool_needed": True,
-                "selected_tool": "calculator",
-                "action": "calculate",
-                "reasoning": "키워드 매칭 - 계산 관련 요청",
-                "confidence": 0.7
-            }
-        elif any(keyword in message_lower for keyword in ["echo", "반복", "따라해"]):
-            return {
-                "tool_needed": True,
-                "selected_tool": "echo",
-                "action": "echo",
-                "reasoning": "키워드 매칭 - 에코 요청",
-                "confidence": 0.7
-            }
-        
-        return None
 
     def _get_available_tools_info(self) -> str:
         """사용 가능한 도구들의 정보를 AI가 이해할 수 있는 형태로 반환"""
@@ -505,18 +472,10 @@ class AIMessageHandler:
    - 용도: 수학 계산, 연산 요청시 사용
    - 예시: "5 + 3 계산해줘", "100 나누기 4"
 """)
-        
-        if self.echo_tool:
-            tools_info.append("""
-5. **echo** - 에코/반복
-   - 액션: echo (메시지 반복)
-   - 용도: 테스트, 확인, 반복 요청시 사용
-   - 예시: "안녕하세요 따라해", "echo test"
-""")
-        
+
         return "\n".join(tools_info) if tools_info else "현재 사용 가능한 도구가 없습니다."
 
-    async def _execute_selected_tool(self, tool_decision: Dict[str, Any], user_message: str) -> str:
+    async def _execute_selected_tool(self, tool_decision: Dict[str, Any], user_message: str, int_user_id: Optional[int] = None) -> str:
         """AI가 선택한 도구를 실행"""
         selected_tool = tool_decision.get("selected_tool")
         action = tool_decision.get("action")
@@ -528,15 +487,14 @@ class AIMessageHandler:
         
         try:
             if selected_tool == "notion_todo":
-                return await self._execute_notion_todo(user_message)
+                return await self._execute_notion_todo(user_message, int_user_id)
             elif selected_tool == "apple_notes":
                 return await self._execute_apple_notes(user_message)
             elif selected_tool == "notion_calendar":
                 return await self._execute_notion_calendar(user_message)
             elif selected_tool == "calculator":
                 return await self._execute_calculator(user_message)
-            elif selected_tool == "echo":
-                return await self._execute_echo(user_message)
+            
             elif selected_tool == "web_scraper":
                 return await self._execute_web_scraper()
             else:
@@ -561,7 +519,7 @@ class AIMessageHandler:
                 "notion_todo": "📝 Notion Todo",
                 "notion_calendar": "📅 Notion Calendar", 
                 "calculator": "🔢 Calculator",
-                "echo": "🔊 Echo Tool",
+                
                 "web_scraper": "🌐 Web Scraper",
                 "apple_auto_responder": "🍎 Apple Auto Responder",
                 "apple_notification_monitor": "📱 Apple Notification Monitor"
@@ -582,7 +540,7 @@ class AIMessageHandler:
         
         return "\n".join(status_lines)
 
-    async def _execute_notion_todo(self, user_message: str) -> str:
+    async def _execute_notion_todo(self, user_message: str, int_user_id: Optional[int] = None) -> str:
         """실제 Notion Todo 도구 실행"""
         try:
             if not self.notion_todo_tool:
@@ -593,6 +551,20 @@ class AIMessageHandler:
             # 설명이 없을 경우, 원문을 출처로 남김
             if "description" not in parameters:
                 parameters["description"] = f"Discord에서 추가됨: {user_message}"
+
+            # 업데이트 시 최근 컨텍스트의 todo_id 보강 (도구 내부 폴백 제거에 따른 보강)
+            try:
+                action = str(parameters.get("action", "")).lower()
+                if action == "update" and "todo_id" not in parameters and self.session_manager and isinstance(int_user_id, int):
+                    session = self.session_manager.active_sessions.get(int_user_id)  # type: ignore[attr-defined]
+                    if session and isinstance(session.context, dict):
+                        last_todo = session.context.get("last_notion_todo")
+                        if isinstance(last_todo, dict):
+                            todo_id = last_todo.get("todo_id")
+                            if todo_id:
+                                parameters["todo_id"] = todo_id
+            except Exception:
+                pass
 
             logger.info(f"Notion Todo 도구 실행 파라미터: {parameters}")
             result = await self.notion_todo_tool.execute(parameters)
@@ -611,33 +583,29 @@ class AIMessageHandler:
             return f"❌ Notion 할일 추가 실패: {str(e)}"
 
     async def _execute_apple_notes(self, user_message: str) -> str:
-        """실제 Apple Notes 도구 실행"""
+        """실제 Apple Notes 도구 실행 (LLM 에이전틱 파라미터)"""
         try:
             if not hasattr(self, 'apple_notes_tool') or not self.apple_notes_tool:
                 return "❌ Apple Notes 도구가 연결되지 않았습니다."
-            
-            memo_content = self._extract_memo_content(user_message)
-            
-            # 실제 Apple Notes 도구 호출
-            logger.info(f"Apple Notes 도구 실행: {memo_content}")
-            
-            # AppleNotesTool의 execute 메서드 호출
-            parameters = {
-                "action": "create",
-                "title": memo_content[:30] if len(memo_content) > 30 else memo_content,  # 제목은 30자 제한
-                "content": memo_content,
-                "folder": "Notes"
-            }
+
+            # LLM으로 자연어 → 파라미터 변환
+            parameters = await self._agentic_parameters(user_message, "apple_notes")
+            if "action" not in parameters:
+                parameters["action"] = "create"
+            if parameters.get("action") == "create" and "title" not in parameters:
+                parameters["title"] = (user_message or "메모")[:30]
+
             result = await self.apple_notes_tool.execute(parameters)
-            
+
             if result.status == ExecutionStatus.SUCCESS:
-                return f"✅ Apple Notes에 메모를 추가했습니다: {memo_content}"
+                title = parameters.get("title") or parameters.get("target_title") or "메모"
+                return f"📝 Apple 메모에 저장했습니다: {title}"
             else:
-                return f"❌ Apple Notes 메모 추가 실패: {result.error_message}"
-            
+                return f"❌ Apple 메모 처리 실패: {result.error_message}"
+
         except Exception as e:
             logger.error(f"Apple Notes 도구 실행 실패: {e}")
-            return f"❌ Apple Notes 메모 추가 실패: {str(e)}"
+            return f"❌ Apple 메모 처리 실패: {str(e)}"
 
     async def _execute_notion_calendar(self, user_message: str) -> str:
         """실제 Notion Calendar 도구 실행"""
@@ -676,76 +644,38 @@ class AIMessageHandler:
         return await engine.parse_natural_command(natural_command, tool_name)
 
     async def _execute_calculator(self, user_message: str) -> str:
-        """실제 Calculator 도구 실행"""
+        """실제 Calculator 도구 실행 (LLM 우선, 최소 폴백)"""
         try:
             if not self.calculator_tool:
                 return "❌ Calculator 도구가 연결되지 않았습니다."
             
-            calculation = self._extract_calculation(user_message)
-            
-            # 실제 Calculator 도구 호출 - 계산식 파싱
-            logger.info(f"Calculator 도구 실행: {calculation}")
-            
-            # 간단한 계산식 파싱
-            import re
-            
-            # 더하기 패턴
-            add_match = re.search(r'(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)', calculation)
-            if add_match:
-                parameters = {
-                    "operation": "+",
-                    "a": float(add_match.group(1)),
-                    "b": float(add_match.group(2))
-                }
-                result = await self.calculator_tool.execute(parameters)
-                if result.status == ExecutionStatus.SUCCESS:
-                    return f"🔢 계산 결과: {calculation} = {result.data}"
-                    
-            # 빼기 패턴
-            sub_match = re.search(r'(\d+(?:\.\d+)?)\s*\-\s*(\d+(?:\.\d+)?)', calculation)
-            if sub_match:
-                parameters = {
-                    "operation": "-",
-                    "a": float(sub_match.group(1)),
-                    "b": float(sub_match.group(2))
-                }
-                result = await self.calculator_tool.execute(parameters)
-                if result.status == ExecutionStatus.SUCCESS:
-                    return f"🔢 계산 결과: {calculation} = {result.data}"
-                    
-            # 곱하기 패턴
-            mul_match = re.search(r'(\d+(?:\.\d+)?)\s*[\*×]\s*(\d+(?:\.\d+)?)', calculation)
-            if mul_match:
-                parameters = {
-                    "operation": "*",
-                    "a": float(mul_match.group(1)),
-                    "b": float(mul_match.group(2))
-                }
-                result = await self.calculator_tool.execute(parameters)
-                if result.status == ExecutionStatus.SUCCESS:
-                    return f"🔢 계산 결과: {calculation} = {result.data}"
-                    
-            # 나누기 패턴
-            div_match = re.search(r'(\d+(?:\.\d+)?)\s*[\/÷]\s*(\d+(?:\.\d+)?)', calculation)
-            if div_match:
-                parameters = {
-                    "operation": "/",
-                    "a": float(div_match.group(1)),
-                    "b": float(div_match.group(2))
-                }
-                result = await self.calculator_tool.execute(parameters)
-                if result.status == ExecutionStatus.SUCCESS:
-                    return f"🔢 계산 결과: {calculation} = {result.data}"
-            
-            # 계산식을 인식하지 못한 경우 폴백
+            # 1) LLM 에이전틱 파라미터 생성 시도
             try:
-                if re.match(r'^[\d\+\-\*\/\(\)\.\s]+$', calculation):
-                    result = eval(calculation)
-                    return f"🔢 계산 결과: {calculation} = {result}"
-                else:
-                    return f"❌ 계산식을 인식할 수 없습니다: {calculation}"
-            except:
-                return f"❌ 계산 실행 실패: 올바른 계산식을 입력해주세요"
+                params = await self._agentic_parameters(user_message, "calculator")
+                result = await self.calculator_tool.execute(params)
+                if result.status == ExecutionStatus.SUCCESS:
+                    return f"🔢 계산 결과: {params.get('a')} {params.get('operation')} {params.get('b')} = {result.data}"
+            except Exception:
+                pass
+
+            # 2) 최소 폴백: 단순 정규식 매칭
+            import re
+            calculation = self._extract_calculation(user_message)
+            patterns = [
+                (r'(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)', '+'),
+                (r'(\d+(?:\.\d+)?)\s*\-\s*(\d+(?:\.\d+)?)', '-'),
+                (r'(\d+(?:\.\d+)?)\s*[\*×]\s*(\d+(?:\.\d+)?)', '*'),
+                (r'(\d+(?:\.\d+)?)\s*[\/÷]\s*(\d+(?:\.\d+)?)', '/'),
+            ]
+            for pat, op in patterns:
+                m = re.search(pat, calculation)
+                if m:
+                    p = {"operation": op, "a": float(m.group(1)), "b": float(m.group(2))}
+                    result = await self.calculator_tool.execute(p)
+                    if result.status == ExecutionStatus.SUCCESS:
+                        return f"🔢 계산 결과: {calculation} = {result.data}"
+                    break
+            return "❌ 계산식을 인식할 수 없습니다"
             
         except Exception as e:
             logger.error(f"Calculator 도구 실행 실패: {e}")
@@ -755,129 +685,9 @@ class AIMessageHandler:
         """실제 Web Scraper 도구 실행 (일시적으로 비활성화)"""
         return "⚠️ Web Scraper 도구는 일시적으로 비활성화되었습니다."
 
-    async def _execute_echo(self, user_message: str) -> str:
-        """실제 Echo 도구 실행"""
-        try:
-            if not self.echo_tool:
-                return "❌ Echo 도구가 연결되지 않았습니다."
-            
-            # 실제 Echo 도구 호출
-            logger.info(f"Echo 도구 실행: {user_message}")
-            
-            parameters = {"message": user_message}
-            result = await self.echo_tool.execute(parameters)
-            
-            if result.status == ExecutionStatus.SUCCESS:
-                return f"🔊 Echo: {result.data}"
-            else:
-                return f"❌ Echo 오류: {result.error_message}"
-            
-        except Exception as e:
-            logger.error(f"Echo 도구 실행 실패: {e}")
-            return f"🔊 Echo: {user_message}"
+    # echo 도구 제거: 따라하기는 일반 LLM 응답으로 처리
     
-    def _extract_memo_content(self, message: str) -> str:
-        """메시지에서 메모 내용 추출"""
-        import re
-        
-        # 사과 관련 패턴 개선
-        apple_pattern = r'사과\s*(\d+)\s*개'
-        apple_match = re.search(apple_pattern, message)
-        if apple_match:
-            count = apple_match.group(1)
-            return f"사과 {count}개 구매"
-        
-        # 애플메모장, Apple Notes 관련 키워드 제거
-        cleaned_message = message
-        remove_words = [
-            "애플메모장에", "애플 메모장에", "apple notes에", "애플메모", 
-            "메모장에", "적어줘", "적어줄래", "저장해줘", "기록해줘", 
-            "남겨줘", "추가해줘", "써줘", "라고", "하라고", "사라고"
-        ]
-        
-        for word in remove_words:
-            cleaned_message = cleaned_message.replace(word, " ")
-        
-        # 연속된 공백 제거
-        cleaned_message = re.sub(r'\s+', ' ', cleaned_message).strip()
-        
-        # 빈 문자열이면 원본 메시지의 일부 반환
-        if not cleaned_message:
-            return message[:50] if len(message) > 50 else message
-        
-        return cleaned_message[:100] if len(cleaned_message) > 100 else cleaned_message
-
-    def _extract_schedule_content(self, message: str) -> Dict[str, Any]:
-        """메시지에서 일정 내용 추출"""
-        import re
-        from datetime import datetime, timedelta
-        
-        # 기본값
-        schedule_info = {
-            "title": "새 일정",
-            "date": None,
-            "time": None
-        }
-        
-        # 시간 패턴 추출 (예: "오후 3시", "15:00", "3시")
-        time_patterns = [
-            r'오후\s*(\d{1,2})시',  # 오후 3시
-            r'오전\s*(\d{1,2})시',  # 오전 9시
-            r'(\d{1,2}):(\d{2})',   # 15:00
-            r'(\d{1,2})시',         # 3시
-        ]
-        
-        for pattern in time_patterns:
-            match = re.search(pattern, message)
-            if match:
-                if "오후" in pattern and match.group(1):
-                    hour = int(match.group(1))
-                    if hour != 12:
-                        hour += 12
-                    schedule_info["time"] = f"{hour:02d}:00"
-                elif "오전" in pattern and match.group(1):
-                    hour = int(match.group(1))
-                    schedule_info["time"] = f"{hour:02d}:00"
-                elif ":" in pattern:
-                    schedule_info["time"] = f"{match.group(1):0>2}:{match.group(2)}"
-                else:
-                    hour = int(match.group(1))
-                    schedule_info["time"] = f"{hour:02d}:00"
-                break
-        
-        # 날짜 패턴 추출 (예: "내일", "오늘", "다음주")
-        today = datetime.now().date()
-        if "내일" in message:
-            schedule_info["date"] = (today + timedelta(days=1)).isoformat()
-        elif "오늘" in message:
-            schedule_info["date"] = today.isoformat()
-        elif "다음주" in message:
-            schedule_info["date"] = (today + timedelta(days=7)).isoformat()
-        else:
-            schedule_info["date"] = today.isoformat()
-        
-        # 일정 제목 추출
-        title_keywords = ["회의", "미팅", "약속", "일정", "만남"]
-        for keyword in title_keywords:
-            if keyword in message:
-                # 키워드 주변 텍스트를 제목으로 사용
-                parts = message.split(keyword)
-                if len(parts) > 1:
-                    title_part = parts[0].strip()
-                    if title_part:
-                        schedule_info["title"] = title_part + " " + keyword
-                    else:
-                        schedule_info["title"] = keyword
-                break
-        else:
-            # 키워드가 없으면 메시지 전체를 제목으로
-            clean_title = message
-            for word in ["일정", "추가", "해줘", "만들어", "줘"]:
-                clean_title = clean_title.replace(word, "").strip()
-            if clean_title:
-                schedule_info["title"] = clean_title
-        
-        return schedule_info
+    # 키워드 기반 전처리/추출 로직 제거 (LLM 기반 파라미터 생성 사용)
     
     def _extract_calculation(self, message: str) -> str:
         """메시지에서 계산식 추출"""
@@ -888,12 +698,6 @@ class AIMessageHandler:
         
         if match:
             return f"{match.group(1)}{match.group(2)}{match.group(3)}"
-        
-        if "더하기" in message or "+" in message:
-            numbers = re.findall(r'\d+(?:\.\d+)?', message)
-            if len(numbers) >= 2:
-                return f"{numbers[0]}+{numbers[1]}"
-        
         return "1+1"
     
     def is_available(self) -> bool:

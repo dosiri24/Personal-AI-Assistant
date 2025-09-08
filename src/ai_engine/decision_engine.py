@@ -147,13 +147,6 @@ class AgenticDecisionEngine:
                 capabilities=["덧셈", "뺄셈", "곱셈", "나눗셈"],
                 required_params=["operation", "a", "b"],
                 optional_params=["precision"]
-            ),
-            Tool(
-                name="echo",
-                description="입력 텍스트를 그대로 반환합니다",
-                capabilities=["반복"],
-                required_params=["text"],
-                optional_params=[]
             )
         ]
         
@@ -226,6 +219,12 @@ class AgenticDecisionEngine:
      parameters는 {{"action":"update","target_title":"점심 회의 준비","title":"저녁 회의 준비","folder":"Notes"}}처럼 구성합니다.
 8. Action 값은 각 도구에서 지원하는 표준 키워드를 사용하세요. 예를 들어 apple_notes는 create/update/search/delete, notion_todo는 create/update/delete/get/list/complete 등입니다. 한국어 표현(예: "메모 수정")을 써도 되지만 parameters.action에는 표준 키워드를 넣으세요.
 9. 동일/유사 제목의 새 항목을 추가하지 마세요. 변경 의도가 분명하면 반드시 기존 항목을 지정하여 업데이트하십시오.
+10. Notion Todo에 대해:
+   - update/delete/complete와 같이 기존 항목을 변경할 때는 반드시 'todo_id'를 parameters에 포함하세요.
+   - 제목을 변경하는 경우, 기존 제목은 'target_title'에, 새 제목은 'title'에 넣어 의도를 명확히 구분하세요.
+   - 만약 todo_id가 대화 맥락에 없으면 먼저 list/get 단계로 해당 항목의 ID를 확인한 뒤 이어서 update를 수행하는 계획을 세우세요.
+11. 컨텍스트에 기존 Todo의 due_date(예: 2025-09-08T22:00:00+09:00 KST)가 있다면, 사용자의 시간 표현(예: "9시")을 그 시간대(+09:00)를 기준으로 해석하고 기존 날짜와 결합하여 ISO(+09:00)로 변환하세요.
+10. Echo(메시지 반복)와 같이 사용자 메시지를 그대로 되풀이하는 도구는 선택하지 마세요. 사용자가 명시적으로 "따라해/echo"를 요구한 경우가 아니라면 도구를 선택하지 말고 일반 답변 경로를 택하세요.
 
 **응답 형식 (JSON):**
 ```json
@@ -364,7 +363,7 @@ class AgenticDecisionEngine:
 자연어 명령을 분석하여 정확한 JSON 파라미터를 생성하세요.
 
 중요한 규칙:
-1. 날짜/시간 표현을 ISO 형식으로 변환 (예: "내일" → "2025-09-05T23:59:00+00:00")
+1. 날짜/시간 표현을 ISO 형식으로 변환하되, 기본 시간대는 Asia/Seoul(+09:00)로 지정 (예: "내일" → "2025-09-05T23:59:00+09:00")
 2. 한국어 우선순위를 정확히 매핑 (급한/중요한 → "높음", 보통 → "중간", 천천히/나중에 → "낮음")
 3. action 선택 가이드라인:
    - "~하기", "~작업", "~추가" → "create" (새로운 할일 생성)
@@ -375,6 +374,11 @@ class AgenticDecisionEngine:
    - "조회", "확인" → "get"
 4. 제목에서 날짜/우선순위 키워드 제거하여 깔끔하게 정리
 5. "완료하기"는 새로운 할일을 만드는 것이므로 반드시 "create" action 사용
+
+도구별 추가 지침:
+- notion_todo:
+  - update/delete/complete에는 반드시 'todo_id'를 포함하세요. ID가 없다면 먼저 목록/조회 단계로 ID를 확인한 뒤 다음 단계에서 업데이트를 수행합니다.
+  - 제목 변경 시 기존 제목은 'target_title', 새 제목은 'title'에 넣어 구분합니다.
 
 응답은 반드시 유효한 JSON 형식으로만 답하세요."""
 

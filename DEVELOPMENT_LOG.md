@@ -2,6 +2,39 @@
 
 ## 📅 개발 일지
 
+## 2025-09-08 에이전틱 모드 정리 및 토글 추가
+
+- Strict Agentic 정렬
+  - 키워드 기반 파싱/폴백 제거: Discord 경로의 도구 선택 및 Apple Notes/계산기 처리에서 키워드 매칭 제거.
+  - LLM 프롬프트 표준화: 도구선택을 `PromptManager('tool_selection')`로 일원화.
+  - 명령분석 템플릿에 `intent_category`/`urgency` 추가.
+
+- Self-Repair 루프 도입
+  - 실패 시 도구 스키마/에러/이전 파라미터를 바탕으로 LLM이 파라미터를 재생성하여 재시도(`PAI_SELF_REPAIR_ATTEMPTS`, 기본 2회).
+  - 위치: `src/mcp/mcp_integration.py: process_user_request_detailed()`.
+
+- 환경 변수 토글 추가
+  - `PAI_MOCK_MODE` = off|echo|heuristic (기본 off). Mock LLM 휴리스틱 완전 차단/에코 모드 지원.
+  - `PAI_PARAM_NORMALIZATION_MODE` = off|minimal|full (기본 minimal). 파라미터 정규화 수준 제어.
+
+- 파라미터 정규화 모드 구현
+  - minimal: 키 이름/타임존 보정/기본값 정도만 적용(동의어 매핑 제거).
+  - full: 기존 동의어 매핑 유지.
+  - 위치: `src/mcp/mcp_integration.py: _normalize_parameters()`.
+
+- 기타 클린업
+  - Mock LLM: ENV에 따라 off/echo/heuristic 동작. (`src/ai_engine/llm_provider.py`)
+  - 누락 템플릿 `context_aware_planning` 추가, 도구선택 템플릿 스키마 정리.
+
+## 2025-09-08 Echo 도구 제거(Agentic 일관성)
+
+- Echo MCP 도구 제거: 따라하기는 별도 도구 없이 일반 LLM 응답으로 처리
+  - 삭제: `src/tools/echo_tool.py`
+  - 정리: `src/tools/__init__.py`에서 Echo 제거, `src/discord_bot/ai_handler.py`의 Echo 초기화/실행/표시 제거
+  - 의사결정 프롬프트에 "명시 요청 없으면 echo 선택 금지" 지침 추가
+  - README의 프로젝트 구조에서 echo 제거
+
+
 ### 2025년 9월 5일
 
 #### ✅ Phase 3.3: 에이전틱 의사결정 엔진 완성

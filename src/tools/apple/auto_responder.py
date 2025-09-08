@@ -18,7 +18,8 @@ from loguru import logger
 from .notification_monitor import NotificationData, MacOSNotificationMonitor
 
 try:
-    from mcp.apple_agent_v2 import AppleAppsAgent
+    # src 패키지 컨텍스트로 임포트하여 상대 import( ..ai_engine )가 정상 동작하도록 함
+    from src.mcp.apple_agent_v2 import AppleAppsAgent
     AppleAppsAgentType = AppleAppsAgent
 except ImportError:
     logger.warning("Apple Agent를 가져올 수 없습니다. 시뮬레이션 모드로 실행됩니다.")

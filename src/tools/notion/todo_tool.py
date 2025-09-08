@@ -6,7 +6,8 @@ Notion 할일 데이터베이스를 관리하는 MCP 도구입니다.
 """
 
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field
 
@@ -67,6 +68,12 @@ class TodoTool(BaseTool):
                 description="수행할 작업 (create, update, delete, get, list, complete)",
                 required=True,
                 choices=["create", "update", "delete", "get", "list", "complete"]
+            ),
+            ToolParameter(
+                name="target_title",
+                type=ParameterType.STRING,
+                description="대상 할일 제목 (todo_id가 없을 때 검색용)",
+                required=False
             ),
             ToolParameter(
                 name="title",
@@ -172,18 +179,24 @@ class TodoTool(BaseTool):
     def _parse_datetime(self, date_str: str) -> datetime:
         """자연어나 ISO 형식의 날짜/시간을 파싱"""
         if not date_str:
-            return datetime.now(timezone.utc)
+            # 기본 시간대 (KST 등) 현재 시각 반환
+            tz = ZoneInfo(self.settings.default_timezone)
+            return datetime.now(tz)
         
         # ISO 형식 시도
         try:
             if date_str.endswith('Z'):
                 date_str = date_str[:-1] + '+00:00'
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                # 시간대 정보가 없으면 기본 시간대 부여
+                dt = dt.replace(tzinfo=ZoneInfo(self.settings.default_timezone))
+            return dt
         except ValueError:
             pass
         
         # 자연어 파싱 (간단한 패턴들)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(ZoneInfo(self.settings.default_timezone))
         date_str_lower = date_str.lower().strip()
         
         if date_str_lower in ['오늘', 'today']:

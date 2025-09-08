@@ -141,10 +141,19 @@ class NaturalLanguageProcessor:
             # 응답 파싱
             parsed_data = self._extract_json_from_response(response.content)
             
-            # Intent 분류 - AI 응답과 원본 메시지 모두 활용
-            ai_intent = parsed_data.get("intent", "")
-            combined_text = f"{ai_intent} {user_command}"  # AI 분석과 원본 메시지 결합
-            intent = self._classify_intent(combined_text)
+            # Intent 분류 - 키워드 기반 분류 제거, LLM의 intent_category 사용
+            intent_map = {
+                "task_management": IntentType.TASK_MANAGEMENT,
+                "information_search": IntentType.INFORMATION_SEARCH,
+                "web_scraping": IntentType.WEB_SCRAPING,
+                "system_control": IntentType.SYSTEM_CONTROL,
+                "communication": IntentType.COMMUNICATION,
+                "file_management": IntentType.FILE_MANAGEMENT,
+                "automation": IntentType.AUTOMATION,
+                "query": IntentType.QUERY,
+                "unclear": IntentType.UNCLEAR,
+            }
+            intent = intent_map.get(str(parsed_data.get("intent_category", "")).lower(), IntentType.UNCLEAR)
             
             # ParsedCommand 객체 생성
             return ParsedCommand(
@@ -152,7 +161,13 @@ class NaturalLanguageProcessor:
                 intent=intent,
                 confidence=parsed_data.get("confidence", 0.5),
                 entities=self._extract_entities(user_command, parsed_data),
-                urgency=self._determine_urgency(parsed_data),
+                # 긴급도 - 키워드 기반 제거, LLM의 urgency 사용
+                urgency={
+                    "immediate": UrgencyLevel.IMMEDIATE,
+                    "high": UrgencyLevel.HIGH,
+                    "medium": UrgencyLevel.MEDIUM,
+                    "low": UrgencyLevel.LOW,
+                }.get(str(parsed_data.get("urgency", "")).lower(), UrgencyLevel.MEDIUM),
                 requires_tools=parsed_data.get("required_tools", []),
                 clarification_needed=parsed_data.get("clarification_needed", []),
                 metadata={
@@ -243,47 +258,7 @@ class NaturalLanguageProcessor:
             logger.error(f"JSON 파싱 오류: {e}")
             return {}
             
-    def _classify_intent(self, intent_text: str) -> IntentType:
-        """의도 분류 - 원본 메시지도 함께 분석"""
-        intent_lower = intent_text.lower()
-        
-        # Todo/작업 관련 키워드 확장
-        task_keywords = ["일정", "캘린더", "할일", "작업", "리마인더", "추가", "생성", "만들", "todo", "task", "notion"]
-        if any(word in intent_lower for word in task_keywords):
-            return IntentType.TASK_MANAGEMENT
-            
-        elif any(word in intent_lower for word in ["검색", "찾기", "정보", "알아보기"]):
-            return IntentType.INFORMATION_SEARCH
-        elif any(word in intent_lower for word in ["시스템", "설정", "제어", "실행"]):
-            return IntentType.SYSTEM_CONTROL
-        elif any(word in intent_lower for word in ["메시지", "연락", "전송", "공유"]):
-            return IntentType.COMMUNICATION
-        elif any(word in intent_lower for word in ["파일", "폴더", "문서", "저장"]):
-            return IntentType.FILE_MANAGEMENT
-        elif any(word in intent_lower for word in ["자동화", "스케줄", "반복", "설정"]):
-            return IntentType.AUTOMATION
-        elif any(word in intent_lower for word in ["질문", "궁금", "어떻게", "무엇"]):
-            return IntentType.QUERY
-        else:
-            return IntentType.UNCLEAR
-            
-    def _determine_urgency(self, parsed_data: Dict[str, Any]) -> UrgencyLevel:
-        """긴급도 판단"""
-        difficulty = parsed_data.get("difficulty", "medium")
-        action_plan = parsed_data.get("action_plan", [])
-        
-        # 즉시 실행이 필요한 키워드 확인
-        urgent_keywords = ["즉시", "지금", "빨리", "긴급", "당장"]
-        text = parsed_data.get("intent", "") + " " + parsed_data.get("goal", "")
-        
-        if any(keyword in text for keyword in urgent_keywords):
-            return UrgencyLevel.IMMEDIATE
-        elif difficulty == "hard" or len(action_plan) > 3:
-            return UrgencyLevel.HIGH
-        elif difficulty == "easy":
-            return UrgencyLevel.LOW
-        else:
-            return UrgencyLevel.MEDIUM
+    # 키워드 기반 의도/긴급도 판별 제거 (LLM 결과 사용)
             
     def _extract_entities(self, text: str, parsed_data: Dict[str, Any]) -> Dict[str, Any]:
         """개체명 추출"""

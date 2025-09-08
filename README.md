@@ -36,6 +36,18 @@ cp .env.example .env
 - `NOTION_API_TOKEN`: Notion 통합 토큰
 - 기타 필요한 API 키들
 
+추가 환경 변수(에이전틱 모드 제어):
+
+- `PAI_MOCK_MODE` (기본: `off`): Mock LLM 동작 토글
+  - `off`: 비활성화(운영 권장)
+  - `echo`: 마지막 사용자 메시지를 그대로 반환(디버그용)
+  - `heuristic`: 키워드 기반 휴리스틱 응답(데모/테스트용)
+- `PAI_PARAM_NORMALIZATION_MODE` (기본: `minimal`): MCP 파라미터 정규화 수준
+  - `off`: 정규화 비활성화(LLM 결과 그대로 실행)
+  - `minimal`: 비해석적 보정만(키 이름/타임존/기본값)
+  - `full`: 동의어 매핑까지 수행(지양)
+- `PAI_SELF_REPAIR_ATTEMPTS` (기본: `2`): 도구 실행 실패 시 LLM 자기교정 재시도 횟수
+
 ### 3. 실행
 
 ```bash
@@ -88,106 +100,53 @@ poetry run pai notion list-todos --filter pending
 
 ```
 Personal-AI-Assistant/
-├── main.py                         # Discord 런처(단일 인스턴스/인증서/실행)
+├── main.py                         # Discord 런처(PID/인증서/Apple MCP 자동시작 옵션)
 ├── src/
 │   ├── main.py                     # CLI 엔트리포인트 (Click)
-│   ├── config.py                   # 환경설정(.env)
-│   ├── daemon.py                   # 데몬 관리/상태
-│   ├── log_manager.py              # 로그 관리 유틸
-│   ├── process_monitor.py          # 프로세스/리소스 모니터링
+│   ├── config.py                   # Pydantic Settings(.env) + 에이전틱 토글
+│   ├── daemon.py / log_manager.py / process_monitor.py
 │   ├── cli/
 │   │   ├── main.py                 # 명령군 등록
 │   │   └── commands/
-│   │       ├── service.py          # start/stop/restart/status/health/maintenance
+│   │       ├── service.py          # start/stop/restart/status/health
 │   │       ├── monitoring.py       # logs/queue/sessions/process-message
-│   │       ├── tools.py            # tools list/info/execute/discover/stats/history
+│   │       ├── tools.py            # tools list/info/execute/discover/stats
 │   │       ├── notion.py           # Notion CLI 도우미
-│   │       ├── apple_commands.py   # Apple MCP 서버 관리
-│   │       ├── apple_apps_commands.py
+│   │       ├── apple_commands.py / apple_apps_commands.py
 │   │       └── utils.py
 │   ├── discord_bot/
-│   │   ├── bot.py                  # 이벤트/권한/세션/기본 명령어
-│   │   ├── ai_handler.py           # AI↔MCP 브리지/도구 실행 조율
-│   │   ├── parser.py               # 단순 메시지 파서
-│   │   ├── router.py               # CLI 라우팅(선택)
-│   │   ├── session.py              # 대화 세션(SQLite)
-│   │   ├── message_queue.py        # 메시지 큐(SQLite)
-│   │   └── __init__.py
+│   │   ├── bot.py                  # 권한/세션/중복방지/명령어
+│   │   ├── ai_handler.py           # LLM↔MCP 브리지(템플릿 기반 도구선택, 키워드 폴백 없음)
+│   │   ├── parser.py / router.py / session.py / message_queue.py
 │   ├── ai_engine/
-│   │   ├── llm_provider.py         # Gemini/Mock Provider
-│   │   ├── decision_engine.py      # 에이전틱 도구선택/계획(JSON)
-│   │   ├── natural_language.py     # NL 파이프라인/개인화
-│   │   ├── prompt_templates.py     # 프롬프트 템플릿
-│   │   ├── prompt_optimizer.py     # 프롬프트 A/B
-│   │   ├── response_generator.py   # 응답 생성 유틸
-│   │   └── mcp_integration.py      # (엔진 측 어댑터)
-│   ├── mcp/                        # MCP 런타임/도구
-│   │   ├── base_tool.py            # Tool 인터페이스/검증/결과
-│   │   ├── registry.py             # 도구 등록/발견/활성화
-│   │   ├── executor.py             # 실행기 + 리소스 제한/히스토리
-│   │   ├── protocol.py             # JSON-RPC 2.0 메시지
-│   │   ├── mcp_integration.py      # 에이전틱→도구 실행 파이프라인
-│   │   ├── apple_tools.py          # Apple 앱 MCP 래퍼 모음
-│   │   ├── apple_client.py         # AppleAppsManager (외부 서버 호출)
-│   │   ├── simple_apple_client.py
-│   │   └── apple_agent_v2.py
-│   ├── tools/                      # 실제 실행 도구
-│   │   ├── calculator_tool.py      # 계산기
-│   │   ├── echo_tool.py            # 에코
-│   │   ├── notion/
-│   │   │   ├── client.py           # Notion API 클라이언트
-│   │   │   ├── todo_tool.py        # Notion Todo 도구
-│   │   │   ├── calendar_tool.py    # Notion Calendar 도구
-│   │   │   ├── operations.py
-│   │   │   ├── nlp_parser.py
-│   │   │   └── __init__.py
-│   │   ├── apple/
-│   │   │   ├── notification_monitor.py
-│   │   │   ├── auto_responder.py
-│   │   │   ├── notes_tool.py       # Apple Notes(시뮬레이션)
-│   │   │   └── __init__.py
-│   │   └── web_scraper/            # (실험적)
-│   │       ├── web_scraper_tool.py
-│   │       ├── enhanced_inha_crawler.py
-│   │       ├── inha_notice_crawler.py
-│   │       ├── scheduler.py
-│   │       ├── code_validator.py
-│   │       ├── crawler_generator.py
-│   │       ├── html_analyzer.py
-│   │       └── notice_summary_test.py
-│   ├── memory/                     # 장기기억/RAG/벡터
-│   │   ├── memory_manager.py
-│   │   ├── simple_memory_manager.py
-│   │   ├── vector_store.py
-│   │   ├── rag_engine.py
-│   │   ├── models.py
-│   │   ├── enhanced_models.py
-│   │   └── embedding_provider.py
-│   ├── integration/
-│   │   ├── interfaces.py
-│   │   ├── container.py
-│   │   ├── event_bus.py
-│   │   └── __init__.py
-│   ├── monitoring/
-│   │   ├── dashboard.py
-│   │   └── __init__.py
-│   ├── utils/
-│   │   ├── logger.py               # loguru 기반 로깅
-│   │   ├── error_handler.py        # 오류/재시도/분류
-│   │   ├── performance.py          # 캐시/리소스풀/성능
-│   │   └── __init__.py
+│   │   ├── llm_provider.py         # Gemini Provider, Mock(ENV: PAI_MOCK_MODE)
+│   │   ├── decision_engine.py      # 에이전틱 의사결정/자연어→파라미터 변환
+│   │   ├── prompt_templates.py     # command_analysis/tool_selection/context_aware_planning 등
+│   │   ├── natural_language.py     # intent_category/urgency 기반, 키워드 분류 제거
+│   │   ├── response_generator.py   # 진행/완료/오류 보고 프롬프트
+│   ├── mcp/
+│   │   ├── base_tool.py / registry.py / executor.py / protocol.py
+│   │   ├── mcp_integration.py      # AI 의사결정→도구 실행 + Self-Repair 재시도(ENV)
+│   │   ├── apple_tools.py / apple_client.py / apple_agent_v2.py
+│   ├── tools/
+│   │   ├── calculator_tool.py
+│   │   ├── notion/                 # client.py / todo_tool.py / calendar_tool.py / operations.py / nlp_parser.py
+│   │   └── apple/                  # notes_tool.py / notification_monitor.py / auto_responder.py
+│   │   └── web_scraper/            # (실험적) 크롤러/스케줄러/검증 유틸
+│   ├── memory/                     # 장기기억/RAG/벡터(준비됨)
+│   │   ├── vector_store.py / rag_engine.py / memory_manager.py / simple_memory_manager.py / models.py / enhanced_models.py / embedding_provider.py
+│   ├── integration/                # event_bus / container / interfaces
+│   ├── monitoring/                 # dashboard.py (실험적)
+│   ├── utils/                      # logger / error_handler / performance
 │   └── __init__.py
 ├── external/
-│   └── apple-mcp/                  # Apple MCP TS 서버(선택)
-├── docs/
-│   └── apple-mcp-setup.md          # Apple MCP 설정 가이드
-├── scripts/
-│   └── setup-apple-permissions.sh  # macOS 권한 안내 스크립트
+│   └── apple-mcp/                  # Apple MCP TypeScript 서버(선택)
+├── docs/                           # 설치/가이드 문서
+├── scripts/                        # 권한/설정 스크립트
 ├── data/                           # 런타임 DB/벡터 저장소
 ├── logs/                           # 런타임 로그
-├── NOTION_SETUP.md
-├── PROJECT_PLAN.md / DEVELOPMENT_LOG.md
-├── requirements.txt / pyproject.toml / .env
+├── .env / .env.example             # 환경변수(에이전틱 토글 포함)
+├── PROJECT_PLAN.md / DEVELOPMENT_LOG.md / NOTION_SETUP.md
 └── README.md
 ```
 
@@ -198,6 +157,12 @@ Personal-AI-Assistant/
 - **Discord.py** - Discord Bot
 - **ChromaDB** - 벡터 데이터베이스
 - **Notion API** - 일정/할일 관리
+
+## 🤖 에이전틱 모드 정책
+
+- 기본값은 “엄격한 에이전틱 모드”입니다. 키워드 매칭/동의어 매핑에 의존하지 않고, LLM이 도구 선택과 파라미터를 직접 생성합니다.
+- 실행 실패 시에는 에러/스키마/이전 파라미터를 근거로 LLM이 스스로 파라미터를 교정(Self-Repair)하여 재시도합니다(`PAI_SELF_REPAIR_ATTEMPTS`).
+- 필요 시 `.env`로 Mock/정규화 수준을 일시적으로 조절할 수 있습니다.
 - **Beautiful Soup / Scrapy** - 웹 스크래핑
 - **Click/Typer** - CLI 프레임워크
 

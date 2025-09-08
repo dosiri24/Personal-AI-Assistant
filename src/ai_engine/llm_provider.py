@@ -5,6 +5,7 @@ Google Gemini 2.5 Pro API 래퍼 및 통합 인터페이스 제공
 """
 
 import asyncio
+import os
 import json
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Union, AsyncGenerator
@@ -285,7 +286,15 @@ class MockLLMProvider(LLMProvider):
         **kwargs
     ) -> LLMResponse:
         """Mock 응답 생성 - 의사결정용 JSON 응답 포함"""
-        await asyncio.sleep(0.1)  # 실제 API 호출 시뮬레이션
+        await asyncio.sleep(0.05)  # 실제 API 호출 시뮬레이션
+        mode = os.getenv("PAI_MOCK_MODE", "off").lower()
+        # 운영 기본값: off → Mock 사용 불가
+        if mode == "off":
+            raise LLMProviderError("Mock LLM is disabled by PAI_MOCK_MODE=off")
+        # echo 모드: 마지막 사용자 메시지를 그대로 반환
+        if mode == "echo":
+            content = messages[-1].content if messages else ""
+            return LLMResponse(content=content, model=self.model_name, usage={"input_tokens": 1, "output_tokens": len(content.split())})
         
         if messages:
             # 전체 메시지에서 실제 사용자 요청 추출
