@@ -96,6 +96,8 @@ class DiscordBot:
         # 중복 응답 방지용 최근 메시지 캐시
         self._recent_message_ids = deque(maxlen=2000)
         self._recent_message_set = set()
+        # Reminder task
+        self._reminder_task: Optional[asyncio.Task] = None
     
     def _parse_user_ids(self, user_ids_str: str) -> set[int]:
         """
@@ -160,6 +162,14 @@ class DiscordBot:
             
             self.is_running = True
             self.logger.info("Discord Bot 준비 완료")
+
+            # 정각 리마인더 루프 시작
+            try:
+                if self._reminder_task is None and self.settings.reminder_enabled:
+                    self._reminder_task = asyncio.create_task(self._reminder_loop())
+                    self.logger.info("정각 리마인더 루프 시작")
+            except Exception as e:
+                self.logger.warning(f"리마인더 루프 시작 실패: {e}")
         
         @self.bot.event
         async def on_disconnect():
@@ -445,6 +455,158 @@ class DiscordBot:
             self.logger.info("Discord Bot 중지 완료")
         except Exception as e:
             self.logger.error(f"Discord Bot 중지 중 오류: {e}", exc_info=True)
+        finally:
+            # 리마인더 태스크 취소
+            try:
+                if self._reminder_task and not self._reminder_task.done():
+                    self._reminder_task.cancel()
+            except Exception:
+                pass
+
+    async def _reminder_loop(self):
+        """매 정각마다 Notion Todo의 '예정' 상태 중 마감 임박 항목을 확인하여 알림"""
+        from zoneinfo import ZoneInfo
+        from datetime import datetime, timedelta
+        from src.tools.notion.client import NotionClient, NotionError
+
+        # 준비: Discord 대상 사용자(관리자) 식별
+        def _get_admin_ids() -> list[int]:
+            ids: list[int] = []
+            try:
+                if self.settings.admin_user_ids:
+                    for s in self.settings.admin_user_ids.split(','):
+                        s = s.strip()
+                        if s:
+                            ids.append(int(s))
+            except Exception:
+                pass
+            return ids
+
+        # Notion 클라이언트 준비
+        try:
+            notion = NotionClient(use_async=True)
+        except Exception as e:
+            self.logger.warning(f"리마인더용 Notion 클라이언트 초기화 실패: {e}")
+            return
+
+        tz = ZoneInfo(self.settings.default_timezone)
+        threshold = timedelta(minutes=self.settings.reminder_threshold_minutes)
+
+        while self.is_running:
+            try:
+                # 다음 정각까지 대기
+                now = datetime.now(tz)
+                next_hour = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+                await asyncio.sleep(max(1.0, (next_hour - now).total_seconds()))
+
+                # 실행 시각
+                run_at = datetime.now(tz)
+                until = run_at + threshold
+
+                db_id = getattr(self.settings, 'notion_todo_database_id', None)
+                if not db_id:
+                    self.logger.debug("리마인더: Notion Todo DB 미설정, 건너뜀")
+                    continue
+
+                # 필터: 상태=예정 AND 마감일 on_or_before until AND on_or_after now
+                filter_criteria = {
+                    "and": [
+                        {"property": "작업상태", "status": {"equals": "예정"}},
+                        {"property": "마감일", "date": {"on_or_before": until.isoformat()}},
+                        {"property": "마감일", "date": {"on_or_after": run_at.isoformat()}},
+                    ]
+                }
+
+                try:
+                    result = await notion.query_database(
+                        database_id=db_id,
+                        filter_criteria=filter_criteria,
+                        sorts=None,
+                        page_size=50,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"리마인더: Notion 쿼리 실패: {e}")
+                    continue
+
+                pages = (result or {}).get("results", [])
+                if not pages:
+                    continue
+
+                # 항목 파싱
+                reminders = []
+                for page in pages:
+                    try:
+                        props = page.get("properties", {})
+                        title = ""
+                        if "작업명" in props and props["작업명"].get("title"):
+                            tl = props["작업명"]["title"]
+                            if tl and tl[0].get("text"):
+                                title = tl[0]["text"]["content"]
+                        due_str = None
+                        if "마감일" in props and props["마감일"].get("date"):
+                            due_str = props["마감일"]["date"].get("start")
+                        due_local = None
+                        if due_str:
+                            try:
+                                d = datetime.fromisoformat(due_str.replace('Z', '+00:00'))
+                                due_local = d.astimezone(tz) if d.tzinfo else d.replace(tzinfo=tz)
+                            except Exception:
+                                pass
+                        url = page.get("url", "")
+                        if title and due_local:
+                            reminders.append((title, due_local, url))
+                    except Exception:
+                        continue
+
+                if not reminders:
+                    continue
+
+                # 관리자에게 DM 전송
+                admin_ids = _get_admin_ids()
+                if not admin_ids:
+                    self.logger.debug("리마인더: 관리자 ID 없음, 건너뜀")
+                    continue
+
+                # 전송 대상: 채널 우선, 없으면 DM (관리자)
+                lines = [
+                    "⏰ 마감 임박 할 일 확인",
+                    f"기준시각: {run_at.strftime('%Y-%m-%d %H:%M %Z')}",
+                    ""
+                ]
+                # 가까운 순 정렬
+                reminders.sort(key=lambda x: x[1])
+                for title, due_local, url in reminders[:10]:
+                    lines.append(f"• {title} (마감: {due_local.strftime('%m-%d %H:%M')})")
+                    if url:
+                        lines.append(f"  링크: {url}")
+                lines.append("\n이 중에 진행하셨나요? 필요하면 업데이트해드릴게요.")
+                payload = "\n".join(lines)
+
+                ch_id = getattr(self.settings, 'reminder_channel_id', None)
+                sent = False
+                if ch_id:
+                    try:
+                        channel = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
+                        if channel:
+                            await channel.send(payload)
+                            sent = True
+                    except Exception as e:
+                        self.logger.warning(f"리마인더 채널 전송 실패({ch_id}): {e}")
+
+                if not sent:
+                    admin_ids = _get_admin_ids()
+                    for admin_id in admin_ids:
+                        try:
+                            user = self.bot.get_user(admin_id) or await self.bot.fetch_user(admin_id)
+                            if not user:
+                                continue
+                            await user.send(payload)
+                        except Exception as e:
+                            self.logger.warning(f"리마인더 DM 실패({admin_id}): {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.warning(f"리마인더 루프 오류: {e}")
 
     def get_status(self) -> dict[str, Any]:
         """

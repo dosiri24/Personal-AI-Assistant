@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     memory_cleanup_interval: int = Field(default=3600, description="메모리 정리 간격 (초)")
     web_scraping_delay: int = Field(default=1, description="웹 스크래핑 요청 간 지연 (초)")
     
+    # Reminder / Proactive assistant
+    reminder_enabled: bool = Field(default=True, description="정각 리마인더 기능 활성화")
+    reminder_threshold_minutes: int = Field(default=120, description="마감 임박 임계값 (분)")
+    reminder_channel_id: Optional[int] = Field(default=None, description="선톡을 보낼 Discord 채널 ID")
+    
     
     def has_valid_api_key(self) -> bool:
         """유효한 API 키가 있는지 확인"""
