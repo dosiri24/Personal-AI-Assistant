@@ -6,6 +6,7 @@ AI 엔진과 MCP 도구들을 통합하여 실제 작업을 수행할 수 있도
 
 import asyncio
 import os
+import json
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import unicodedata
@@ -120,11 +121,20 @@ class MCPIntegration:
             decision = await self.decision_engine.make_decision(context)
             logger.info(f"AI 결정: {decision.selected_tools}, 신뢰도: {decision.confidence_score}")
 
+            # 자연어 직접 답변(REPLY) 경로 우선 처리
+            if not decision.selected_tools and decision.reasoning:
+                txt = (decision.reasoning or "").strip()
+                if txt:
+                    logger.info("Agentic: Direct REPLY 선택 — 도구 실행 없이 응답 반환")
+                    return {"text": txt, "execution": None}
+
             if decision.confidence_score < 0.7:
+                logger.info("Agentic: 낮은 신뢰도 — 의도 확인 질문으로 전환")
                 text = await self._friendly_reply(user_input, hint="clarify")
                 return {"text": text, "execution": None}
 
             if not decision.selected_tools:
+                logger.info("Agentic: 선택된 도구 없음 — 일반 답변 모드")
                 text = await self._friendly_reply(user_input)
                 return {"text": text, "execution": None}
 
@@ -203,6 +213,31 @@ class MCPIntegration:
         except Exception as e:
             logger.error(f"요청 처리 중 오류: {e}")
             return {"text": f"❌ 시스템 오류: {str(e)}", "execution": {"status": "error", "error": str(e)}}
+
+    async def _maybe_refine_response(self, user_input: str, draft: str, result_data: Optional[Dict[str, Any]] = None) -> str:
+        """환경변수로 제어되는 최종 응답 LLM 리파인 단계 (JSON 강제 없음)."""
+        try:
+            if os.getenv("PAI_REFINE_FINAL", "0") not in {"1", "true", "TRUE"}:
+                logger.debug("Refine: 비활성화 — 초안 그대로 사용")
+                return draft
+            logger.debug("Refine: 활성화 — 초안 응답을 LLM으로 매끄럽게 정리")
+            system = (
+                "너는 사용자의 요청과 초안 응답, 도구 결과를 바탕으로 짧고 자연스러운 한국어 답변을 만들어.")
+            user = (
+                f"[사용자 요청]\n{user_input}\n\n[초안]\n{draft}\n\n[도구 결과]\n{json.dumps(result_data, ensure_ascii=False) if result_data is not None else '없음'}\n\n"
+                "- 1~3문장으로 간결하게 정리\n- 과한 수식/코드블록/마크다운 금지\n- 핵심만 부드럽게 전달"
+            )
+            msgs = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
+            resp = await self.llm_provider.generate_response(msgs, temperature=0.3)
+            content = (resp.content or draft).strip()
+            # 간단한 정리: 코드블록 제거
+            if content.startswith("```"):
+                s = content.find("\n"); e = content.rfind("```")
+                if s != -1 and e != -1:
+                    content = content[s+1:e].strip()
+            return content or draft
+        except Exception:
+            return draft
 
     # ==========================
     # Filesystem NL Handling
@@ -304,12 +339,19 @@ class MCPIntegration:
 
             # 보조: 루트 별칭 매핑
             def map_root(seg: str) -> Optional[Path]:
-                s = self._norm(seg)
-                if s in {"desktop", "바탕화면"}:
+                # 루트 세그먼트 정규화 + 불용어 제거("내","나의","my","the")
+                try:
+                    import re as _re
+                    base = unicodedata.normalize("NFKC", seg).strip().lower()
+                    base = _re.sub(r"[\s\-_.]+", "", base)
+                    base = base.replace("내", "").replace("나의", "").replace("my", "").replace("the", "")
+                except Exception:
+                    base = str(seg).strip().lower()
+                if base in {"desktop", "바탕화면"}:
                     return desktop_path
-                if s in {"documents", "문서", "도큐먼트"}:
+                if base in {"documents", "문서", "도큐먼트", "내문서", "mydocuments"}:
                     return Path.home() / "Documents"
-                if s in {"downloads", "다운로드"}:
+                if base in {"downloads", "다운로드", "mydownloads"}:
                     return Path.home() / "Downloads"
                 return None
 
@@ -318,17 +360,39 @@ class MCPIntegration:
                 if not text:
                     return None
                 raw = text.replace("\\", "/").strip().strip("\"")
-                # 티틀다(~) 시작이면 홈 기준으로 직접 확장
+                # 1) 절대 경로 처리
+                try:
+                    from os.path import isabs as _isabs
+                except Exception:
+                    _isabs = None  # type: ignore
+                if (hasattr(Path, 'is_absolute') and Path(raw).is_absolute()) or (_isabs and _isabs(raw)):
+                    try:
+                        return Path(raw).resolve(strict=False)
+                    except Exception:
+                        return Path(raw)
+                # 2) ~ 확장
                 if raw.startswith("~"):
                     try:
                         return Path(raw).expanduser().resolve(strict=False)
                     except Exception:
-                        pass
+                        return Path(raw).expanduser()
+                # 3) 의미 경로(바탕화면/문서 등) → 실제 경로 추정
                 parts = [p for p in raw.split('/') if p]
                 if not parts:
                     return None
-                root = map_root(parts[0]) or desktop_path  # 기본 Desktop 기준
-                sub = parts[1:] if map_root(parts[0]) else parts
+                mapped_root = map_root(parts[0])
+                if mapped_root is not None:
+                    root = mapped_root
+                    sub = parts[1:]
+                else:
+                    # 'Users/...' 같이 시스템 루트 하위로 시작하면 절대 루트로 해석
+                    if parts[0].lower() in {"users", "system", "library", "applications", "volumes"}:
+                        root = Path('/')
+                        sub = parts
+                    else:
+                        # 기본 Desktop 기준 상대 경로
+                        root = desktop_path
+                        sub = parts
                 p = root
                 for seg in sub:
                     p = p / seg
@@ -358,13 +422,31 @@ class MCPIntegration:
                 except Exception:
                     return p
 
-            # 1) 원본 파일 추정
+            # 1) 원본 파일 추정 + 스캔 루트 보조 추정
             src = params.get("src")
             src_path = None
+            scan_root_override: Optional[Path] = None
+            src_extra_tokens: list[str] = []
             if isinstance(src, str) and src:
-                cand = semantic_to_path(src)
-                if cand and cand.exists():
-                    src_path = str(cand)
+                raw_src = src.replace("\\", "/").strip().strip("\"")
+                cand = semantic_to_path(raw_src)
+                try:
+                    if cand and cand.exists():
+                        # 파일이 바로 존재하면 그대로 사용. 폴더면 그 폴더를 스캔 루트로 사용
+                        if cand.is_file():
+                            src_path = str(cand)
+                        elif cand.is_dir():
+                            scan_root_override = cand
+                    else:
+                        # 마지막 세그먼트를 파일 질의로 가정, 나머지는 폴더로 해석
+                        parts = [p for p in raw_src.split('/') if p]
+                        if len(parts) >= 2:
+                            folder_guess = semantic_to_path('/'.join(parts[:-1]))
+                            if folder_guess and folder_guess.exists() and folder_guess.is_dir():
+                                scan_root_override = folder_guess
+                                src_extra_tokens.append(parts[-1])
+                except Exception:
+                    pass
             need_find_src = not src_path
 
             # 빠른 경로: 바탕화면 최상위에서 한글 핵심 키워드 우선 매칭
@@ -401,6 +483,7 @@ class MCPIntegration:
             need_find_dst = dst_folder_path is None
 
             # 데스크탑 인덱싱 (최상위만, 비재귀)
+            # 기본 스캔 루트: Desktop, 단 src에서 폴더가 유도되면 그 폴더를 우선 스캔
             listed = await self.tool_executor.execute_tool(
                 tool_name="filesystem",
                 parameters={
@@ -419,6 +502,28 @@ class MCPIntegration:
             dirs = [it for it in items if it.get("type") == "dir"]
             logger.info(f"Agentic(FS): Desktop 인덱싱 완료 — files={len(files)}, dirs={len(dirs)}")
 
+            # 스캔 루트가 별도로 감지되면 해당 폴더에서 파일 목록을 재수집
+            if scan_root_override is not None and scan_root_override.exists():
+                try:
+                    res2 = await self.tool_executor.execute_tool(
+                        tool_name="filesystem",
+                        parameters={
+                            "action": "list",
+                            "path": str(scan_root_override),
+                            "recursive": False,
+                            "include_hidden": False,
+                            "max_items": 5000,
+                        },
+                    )
+                    if res2.result.is_success and isinstance(res2.result.data, dict):
+                        items2 = res2.result.data.get("items", [])
+                        files = [it for it in items2 if it.get("type") == "file"]
+                        logger.info(
+                            f"Agentic(FS): 스캔 루트 교체 — path={scan_root_override}, files={len(files)}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Agentic(FS): 스캔 루트 목록 실패 — {e}")
+
             # 후보 전처리 유틸
             def _rel_from_desktop(path_str: str) -> str:
                 try:
@@ -435,7 +540,7 @@ class MCPIntegration:
 
             # 힌트 추출(사용자 입력과 src 파라미터에서 한글/영문/숫자 토큰)
             src_hint = src if isinstance(src, str) else ""
-            tokens = re.findall(r"[\w가-힣]+", u + " " + src_hint)
+            tokens = re.findall(r"[\w가-힣]+", u + " " + src_hint + (" " + " ".join(src_extra_tokens) if src_extra_tokens else ""))
             # 핵심 한국어 키워드가 요청문에 있다면 강한 필터로 사용
             must_keys_base = ["설계", "세미나", "여름", "학회"]
             must_keys = [k for k in must_keys_base if self._norm(k) in self._norm(u)]
@@ -465,7 +570,7 @@ class MCPIntegration:
                     if s > best_score:
                         best, best_score = it, s
 
-                # LLM에게 상위 후보를 보여주고 선택하도록 위임 (실패 시 스코어 기반 폴백)
+                # LLM에게 상위 후보를 보여주고 선택하도록 위임 (폴백 제거)
                 MAX_CANDS = int(os.getenv("PAI_FS_LLM_CANDIDATES", "10"))
                 ranked = sorted(
                     filtered,
@@ -473,9 +578,16 @@ class MCPIntegration:
                     reverse=True,
                 )[:MAX_CANDS]
                 if ranked:
-                    logger.info(
-                        f"Agentic(FS): LLM 후보 제시 — count={len(ranked)}; 예시={[it.get('name','') for it in ranked[:3]]}"
-                    )
+                    # 상위 후보들의 스코어 로그 (Thinking transparency)
+                    try:
+                        scored_preview = [
+                            (it.get('name',''), self._score_file_entry(it, tokens, desktop_root=desktop))
+                            for it in ranked[:5]
+                        ]
+                        logger.debug(f"Agentic(FS): 상위 후보(이름,점수) — {scored_preview}")
+                    except Exception:
+                        pass
+                    logger.info(f"Agentic(FS): LLM 후보 제시 — count={len(ranked)}")
                     if len(ranked) == 1:
                         # 후보 1개면 LLM 건너뛰고 확정
                         best = ranked[0]
@@ -493,51 +605,18 @@ class MCPIntegration:
                                 user_input=user_input,
                             )
                         except Exception as e:
-                            logger.warning(f"Agentic(FS): LLM 후보 선택 실패, 스코어 기반 사용 — {e}")
-                        if llm_index is not None and 0 <= llm_index < len(ranked):
-                            best = ranked[llm_index]
-                            best_score = 999
-                            logger.info(
-                                f"Agentic(FS): LLM 선택 — index={llm_index}, name={best.get('name','')}, rel={_rel_from_desktop(best.get('path',''))}"
-                            )
-                # 임계값 미달 시 바탕화면 최상위에서 한글 핵심 키워드로 1차 재시도
-                if (not best) or best_score < 3:
-                    try:
-                        desktop_top = await self.tool_executor.execute_tool(
-                            tool_name="filesystem",
-                            parameters={"action": "list", "path": desktop, "recursive": False, "include_hidden": False, "max_items": 5000},
+                            logger.warning(f"Agentic(FS): LLM 후보 선택 중 오류 — {e}")
+                        if llm_index is None or not (0 <= llm_index < len(ranked)):
+                            return {"text": "❌ 원본 파일 선택 실패: LLM 응답을 이해하지 못했습니다.", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": "llm_selection_failed"}}
+                        best = ranked[llm_index]
+                        best_score = 999
+                        logger.info(
+                            f"Agentic(FS): LLM 파일 선택 — name={best.get('name','')}, rel={_rel_from_desktop(best.get('path',''))}"
                         )
-                        if desktop_top.result.is_success and isinstance(desktop_top.result.data, dict):
-                            t_items = desktop_top.result.data.get("items", [])
-                            t_files = [it for it in t_items if it.get("type") == "file" and not _is_noise_file(it.get("name", ""))]
-                            logger.debug(f"Agentic(FS): Desktop 최상위 재스캔 — files={len(t_files)}")
-                            # 한글 핵심 키워드 직매칭 우선
-                            for it in t_files:
-                                nm = it.get("name", "")
-                                nmn = self._norm(nm)
-                                if any(self._norm(k) in nmn for k in ["설계", "여름", "세미나"]):
-                                    best, best_score = it, 10
-                                    break
-                            if not best:
-                                for it in t_files:
-                                    s = self._score_file_entry(it, tokens, desktop_root=desktop)
-                                    if s > best_score:
-                                        best, best_score = it, s
-                    except Exception:
-                        pass
-                if best and best_score >= 2:
-                    src_path = best.get("path")
-                else:
-                    # 후보 제시 후 확인 요청
-                    # 필수 키워드가 있었는데 후보가 없으면 바로 확인 요청
-                    if must_keys and not filtered:
-                        cand = ", ".join(it.get("name", "") for it in files[:5])
-                        text = f"요청한 파일을 찾지 못했어요. 혹시 정확한 파일명이나 확장자를 알려주실 수 있을까요? 후보: {cand}"
-                        return {"text": text, "execution": {"tool_name": "filesystem", "action": "move", "status": "needs_clarification"}}
-                    top = sorted([it for it in files if not _is_noise_file(it.get("name", ""))], key=lambda it: self._score_file_entry(it, tokens, desktop_root=desktop), reverse=True)[:5]
-                    cand = ", ".join(it.get("name", "") for it in top)
-                    text = f"요청한 파일을 찾지 못했어요. 혹시 정확한 파일명이나 확장자를 알려주실 수 있을까요? 후보: {cand}"
-                    return {"text": text, "execution": {"tool_name": "filesystem", "action": "move", "status": "needs_clarification"}}
+                # LLM 결정 반영
+                src_path = best.get("path") if best else None
+                if not src_path:
+                    return {"text": "❌ 원본 파일 선택 실패: 후보가 비어있습니다.", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": "no_candidates"}}
             else:
                 # src가 의미경로였지만 존재하지 않는 경우, 마지막 세그먼트를 키워드로 검색
                 if isinstance(src, str) and src and not Path(src).exists():
@@ -585,6 +664,10 @@ class MCPIntegration:
                 if not dst_folder and preferred_dirs:
                     MAX_DIRS = int(os.getenv("PAI_FS_LLM_DIR_CANDIDATES", "12"))
                     ranked_dirs = preferred_dirs[:MAX_DIRS]
+                    try:
+                        logger.debug(f"Agentic(FS): 폴더 후보 — {[d.get('name','') for d in ranked_dirs[:10]]}")
+                    except Exception:
+                        pass
                     logger.info(f"Agentic(FS): LLM 폴더 후보 제시 — count={len(ranked_dirs)}")
                     if len(ranked_dirs) == 1:
                         dst_folder = ranked_dirs[0].get("path")
@@ -601,35 +684,22 @@ class MCPIntegration:
                                 user_input=user_input,
                             )
                         except Exception as e:
-                            logger.warning(f"Agentic(FS): LLM 폴더 후보 선택 실패, 키워드/기본값 사용 — {e}")
-                        if llm_index is not None and 0 <= llm_index < len(ranked_dirs):
-                            rel = _rel_from_desktop(ranked_dirs[llm_index].get("path", ""))
-                            dst_folder = str((desktop_path / rel).resolve(strict=False))
-                            logger.info(f"Agentic(FS): LLM 폴더 선택 — index={llm_index}, rel={rel}")
-                if not dst_folder:
-                    # 기본: Desktop 자체로 이동
-                    dst_folder = desktop
+                            logger.warning(f"Agentic(FS): LLM 폴더 후보 선택 중 오류 — {e}")
+                        if llm_index is None or not (0 <= llm_index < len(ranked_dirs)):
+                            return {"text": "❌ 대상 폴더 선택 실패: LLM 응답을 이해하지 못했습니다.", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": "llm_selection_failed"}}
+                        sel = ranked_dirs[llm_index]
+                        rel = _rel_from_desktop(sel.get("path", ""))
+                        dst_folder = str((desktop_path / rel).resolve(strict=False))
+                        logger.info(f"Agentic(FS): LLM 폴더 선택 — name={sel.get('name','')}, rel={rel}")
+                    rel = _rel_from_desktop(sel.get("path", ""))
+                    dst_folder = str((desktop_path / rel).resolve(strict=False))
+                    logger.info(f"Agentic(FS): LLM 폴더 선택 — name={sel.get('name','')}, rel={rel}")
             else:
                 dst_folder = str(dst_folder_path)
 
             # 3) 최종 대상 파일 경로 구성
             if not src_path:
-                # 최후 보루: 바탕화면 최상위에서 직접 스캔하여 한글 핵심 키워드 포함 파일 선택
-                try:
-                    import os as _os
-                    desktop_files = [str(p) for p in (desktop_path.iterdir()) if p.is_file()]
-                    chosen = None
-                    for p in desktop_files:
-                        n = self._norm(Path(p).name)
-                        if any(self._norm(k) in n for k in ["설계", "여름", "세미나"]):
-                            chosen = p
-                            break
-                    if chosen:
-                        src_path = chosen
-                except Exception:
-                    pass
-            if not src_path:
-                return {"text": "원본 파일을 찾지 못했어요. 파일명을 조금만 더 구체적으로 알려주세요.", "execution": {"tool_name": "filesystem", "action": "move", "status": "needs_clarification"}}
+                return {"text": "❌ 원본 파일 선택 실패: 후보가 비어있거나 선택되지 않았습니다.", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": "source_not_selected"}}
 
             base_name = Path(src_path).name
             sanitized_folder = sanitize_desktop_path(Path(dst_folder))
@@ -645,6 +715,7 @@ class MCPIntegration:
                 dst_path = str(Path(dst_folder) / f"{stem}-{ts}{ext}")
 
             # 4) 드라이런 → 실제 이동
+            logger.info(f"Agentic(FS): dry_run move — src={src_path}, dst={dst_path}")
             dry = await self.tool_executor.execute_tool(
                 tool_name="filesystem",
                 parameters={"action": "move", "src": src_path, "dst": dst_path, "dry_run": True, "overwrite": False},
@@ -655,11 +726,13 @@ class MCPIntegration:
                 planned = dry.result.data.get("planned") if isinstance(dry.result.data, dict) else None
                 logger.info(f"Agentic(FS): 드라이런 — {planned or 'ok'}")
 
+            logger.info(f"Agentic(FS): execute move — src={src_path}, dst={dst_path}")
             mv = await self.tool_executor.execute_tool(
                 tool_name="filesystem",
                 parameters={"action": "move", "src": src_path, "dst": dst_path, "overwrite": False},
             )
             if not mv.result.is_success:
+                logger.error(f"Agentic(FS): 이동 실패 — {mv.result.error_message}")
                 return {"text": f"이동 실패: {mv.result.error_message}", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": mv.result.error_message}}
             else:
                 logger.info(f"Agentic(FS): 이동 완료 — src={src_path}, dst={dst_path}")
@@ -668,6 +741,8 @@ class MCPIntegration:
             ver = await self.tool_executor.execute_tool("filesystem", {"action": "stat", "path": dst_path})
             data = ver.result.data if ver.result and ver.result.is_success else None
             text = f"파일을 성공적으로 이동했어요.\n원본: {src_path}\n대상: {dst_path}"
+            # 필요 시 LLM으로 최종 응답 리파인 (자연어)
+            text = await self._maybe_refine_response(user_input, text, data)
             return {
                 "text": text,
                 "execution": {
@@ -691,45 +766,67 @@ class MCPIntegration:
                 raise LLMProviderError("후보가 비어있습니다")
             system = (
                 "너는 파일 선택 도우미야.\n"
-                "- 아래 후보 리스트 중 사용자의 의도에 가장 맞는 하나를 고르고, JSON만 반환해.\n"
-                "- 출력 형식: {\"selected_index\": <정수>}\n"
-                "- 설명/텍스트/코드블록 없이 JSON 하나만.\n"
+                "- 아래 후보 리스트 중 '사용자 요청'에 가장 부합하는 하나를 고르고,\n"
+                "  그 후보의 정확한 이름(name)만 한 줄로 출력해. 다른 말 금지.\n"
                 "- 문서류(.hwpx/.hwp/.docx/.pdf/.txt)와 얕은 경로를 선호.\n"
                 "- 노이즈(Thumbs.db, .DS_Store, desktop.ini)는 제외.\n"
             )
-            # 개인정보/경로 노출을 최소화하기 위해 파일명만 사용하고 길이는 제한
-            def _short(s: str, n: int = 60) -> str:
-                return (s[:n] + '…') if len(s) > n else s
+            # 개인정보/경로 노출 최소화를 위해 파일명만 표시
             lines = [
-                question,
+                f"[사용자 요청] {user_input}",
                 "",
-                "[규칙] JSON만, {\"selected_index\": <정수> 형식으로 답변하세요.",
-                "[참고] 아래는 후보 목록입니다. index로만 선택하세요.",
+                f"[질문] {question}",
+                "[출력] 후보의 name 중 하나를 정확히 그대로 한 줄로 출력",
                 "",
-                f"[후보 {kind}] (index, name)",
+                f"[후보 {kind}] (name)",
             ]
-            for i, c in enumerate(candidates):
-                lines.append(f"{i}. {_short(c.get('name',''))}")
+            for c in candidates:
+                nm = c.get('name','')
+                lines.append(f"- {nm}")
             user = "\n".join(lines)
             msgs = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
-            # 선택 안정화를 위해 temperature=0.0
-            resp = await self.llm_provider.generate_response(msgs, temperature=0.0, max_tokens=64)
+            # 선택 안정화를 위해 temperature=0.0, 그리고 텍스트 MIME으로 강제
+            logger.debug(
+                f"Agentic(FS): 후보 선택 프롬프트 — kind={kind}, count={len(candidates)}, question='{question}'"
+            )
+            resp = await self.llm_provider.generate_response(
+                msgs,
+                temperature=0.0,
+                response_mime_type='text/plain'
+            )
             content = (resp.content or "").strip()
             if content.startswith("```"):
                 start = content.find("\n"); end = content.rfind("```")
                 if start != -1 and end != -1:
                     content = content[start+1:end].strip()
-            import json as _json
+            logger.debug(f"Agentic(FS): LLM 원문 응답 — '{content}'")
             if not content:
-                # 비어있으면 폴백: None 반환해 상위 로직이 스코어 기반 선택
-                logger.warning("Agentic(FS): LLM 응답 비어있음 — 스코어 기반 폴백")
+                logger.warning("Agentic(FS): LLM 응답 비어있음 — 선택 실패")
                 return None
-            data = _json.loads(content)
-            idx = data.get("selected_index")
-            if not isinstance(idx, int):
-                logger.warning("Agentic(FS): LLM 응답 JSON에 selected_index 없음 — 폴백")
-                return None
-            return int(idx)
+            # 후보 이름 직접 매칭
+            out = content.strip().strip('"').strip("'")
+            # 1) 정확 일치
+            for i, c in enumerate(candidates):
+                if out == (c.get('name','') or ''):
+                    logger.info(f"Agentic(FS): 후보 선택(정확 일치) — name='{out}', index={i}")
+                    return i
+            # 2) 대소문자 무시 일치
+            low = out.lower()
+            for i, c in enumerate(candidates):
+                if low == (c.get('name','') or '').lower():
+                    logger.info(f"Agentic(FS): 후보 선택(대소문자 무시) — name='{c.get('name','')}', index={i}")
+                    return i
+            # 3) 유니코드 정규화 기반 느슨한 일치
+            try:
+                norm_out = self._norm(out)
+                for i, c in enumerate(candidates):
+                    if norm_out == self._norm(c.get('name','') or ''):
+                        logger.info(f"Agentic(FS): 후보 선택(정규화 일치) — name='{c.get('name','')}', index={i}")
+                        return i
+            except Exception:
+                pass
+            logger.warning("Agentic(FS): LLM 응답에서 후보명을 매칭하지 못함 — 선택 실패")
+            return None
         except Exception as e:
             # LLM 오류는 상위에서 폴백하도록 None 반환
             logger.warning(f"Agentic(FS): LLM 후보 선택 중 예외 — {e}")

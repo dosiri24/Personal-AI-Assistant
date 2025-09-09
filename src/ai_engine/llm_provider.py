@@ -192,22 +192,32 @@ class GeminiProvider(LLMProvider):
             # 메시지 변환
             prompt = self._convert_messages_to_prompt(messages)
             
-            # 생성 설정
+            # 생성 설정 (기본은 자연어 텍스트 응답)
             config_dict = {
                 'temperature': temperature,
                 # 선택·추출 과제의 안정성을 높이기 위한 기본 설정
                 'candidate_count': 1,
                 'top_k': 1,
                 'top_p': 0.0,
-                # JSON 전용 응답 유도 (지원되는 버전에서만 적용)
-                'response_mime_type': 'application/json',
+                # 기본적으로 자연어 텍스트를 기대 (호출부에서 필요 시 override)
+                'response_mime_type': 'text/plain',
                 **kwargs
             }
             
-            if max_tokens:
-                config_dict['max_output_tokens'] = max_tokens
+            # 출력 토큰 상한: 명시가 없으면 설정값(ai_max_tokens)으로 크게 설정
+            try:
+                default_max = getattr(self.config, 'ai_max_tokens', None)
+            except Exception:
+                default_max = None
+            config_dict['max_output_tokens'] = max_tokens if max_tokens is not None else (default_max or 8192)
             
             # 응답 생성
+            try:
+                logger.debug(
+                    f"Gemini generate: model={self.model_name}, temp={config_dict.get('temperature')}, max_tokens={config_dict.get('max_output_tokens')}, mime={config_dict.get('response_mime_type')}, prompt_len={len(prompt)}"
+                )
+            except Exception:
+                pass
             def _do_generate() -> Any:
                 # safety_settings는 모델 생성 시에도 반영되지만, 일부 버전에선 호출 시 지정이 필요할 수 있음
                 try:
@@ -262,6 +272,12 @@ class GeminiProvider(LLMProvider):
                         finish_reason = getattr(response, 'finish_reason', None)
                 except Exception:
                     finish_reason = None
+                try:
+                    logger.debug(
+                        f"Gemini raw response: has_text={(hasattr(response,'text') and bool(getattr(response,'text')))}, candidates={len(getattr(response,'candidates',[]) ) if hasattr(response,'candidates') else 0}"
+                    )
+                except Exception:
+                    pass
                 if not content:
                     logger.error(
                         f"Gemini 응답이 비어있습니다. finish_reason={finish_reason} (prompt 길이={len(prompt)})"
