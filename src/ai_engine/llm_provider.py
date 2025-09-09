@@ -15,6 +15,12 @@ from enum import Enum
 # Google Generative AI 안전한 import
 try:
     import google.generativeai as genai
+    # Safety 설정 타입 (버전에 따라 위치가 다를 수 있음)
+    try:
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold  # type: ignore
+    except Exception:
+        HarmCategory = None  # type: ignore
+        HarmBlockThreshold = None  # type: ignore
     GENAI_AVAILABLE = True
     print("Google Generative AI 패키지 로드 성공")
 except ImportError as e:
@@ -109,6 +115,7 @@ class GeminiProvider(LLMProvider):
         super().__init__(config)
         self.model_name = getattr(self.config, 'ai_model', 'gemini-2.5-pro')
         self.model = None
+        self.safety_settings = None
         
     async def initialize(self) -> bool:
         """Gemini API 초기화"""
@@ -132,9 +139,25 @@ class GeminiProvider(LLMProvider):
                     logger.error("genai.configure 메서드를 찾을 수 없습니다.")
                     return False
                 
+                # Safety: 가능한 경우 모든 카테고리 BLOCK_NONE으로 설정 (빈 응답/차단 완화)
+                try:
+                    if HarmCategory and HarmBlockThreshold:
+                        self.safety_settings = [
+                            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_SEXUAL, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_UNSPECIFIED, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                        ]
+                except Exception:
+                    self.safety_settings = None
+
                 # 모델 생성
                 if hasattr(genai, 'GenerativeModel'):
-                    self.model = genai.GenerativeModel(self.model_name)  # type: ignore
+                    if self.safety_settings is not None:
+                        self.model = genai.GenerativeModel(self.model_name, safety_settings=self.safety_settings)  # type: ignore
+                    else:
+                        self.model = genai.GenerativeModel(self.model_name)  # type: ignore
                     logger.info(f"Gemini 모델 '{self.model_name}' 생성 완료")
                 else:
                     logger.error("genai.GenerativeModel 클래스를 찾을 수 없습니다.")
@@ -172,6 +195,12 @@ class GeminiProvider(LLMProvider):
             # 생성 설정
             config_dict = {
                 'temperature': temperature,
+                # 선택·추출 과제의 안정성을 높이기 위한 기본 설정
+                'candidate_count': 1,
+                'top_k': 1,
+                'top_p': 0.0,
+                # JSON 전용 응답 유도 (지원되는 버전에서만 적용)
+                'response_mime_type': 'application/json',
                 **kwargs
             }
             
@@ -179,19 +208,77 @@ class GeminiProvider(LLMProvider):
                 config_dict['max_output_tokens'] = max_tokens
             
             # 응답 생성
+            def _do_generate() -> Any:
+                # safety_settings는 모델 생성 시에도 반영되지만, 일부 버전에선 호출 시 지정이 필요할 수 있음
+                try:
+                    return self.model.generate_content(  # type: ignore
+                        prompt,
+                        generation_config=config_dict,
+                        safety_settings=self.safety_settings if self.safety_settings is not None else None,
+                    )
+                except TypeError:
+                    # safety_settings 파라미터 미지원 버전 폴백
+                    return self.model.generate_content(prompt, generation_config=config_dict)  # type: ignore
+
             if hasattr(self.model, 'generate_content'):
-                response = await asyncio.to_thread(
-                    self.model.generate_content,
-                    prompt,
-                    generation_config=config_dict  # type: ignore
-                )
-                
+                response = await asyncio.to_thread(_do_generate)
+
+                # 안전한 텍스트 추출
                 content = ""
-                if hasattr(response, 'text'):
-                    content = response.text
-                else:
-                    content = str(response)
-                
+                try:
+                    if hasattr(response, 'text') and response.text:
+                        content = response.text
+                    elif hasattr(response, 'candidates') and response.candidates:
+                        # 후보들의 텍스트를 이어붙이거나 첫 후보를 사용
+                        parts = []
+                        for cand in response.candidates:
+                            # 일부 버전은 cand.content.parts에 텍스트가 들어 있음
+                            txt = getattr(cand, 'text', None)
+                            if txt:
+                                parts.append(txt)
+                                continue
+                            content_obj = getattr(cand, 'content', None)
+                            if content_obj is not None:
+                                maybe_text = getattr(content_obj, 'text', None)
+                                if maybe_text:
+                                    parts.append(maybe_text)
+                                    continue
+                            # 최후 보루: 문자열화
+                            parts.append(str(cand))
+                        content = "\n".join([p for p in parts if p])
+                    else:
+                        # 사용 가능한 텍스트가 없는 경우
+                        content = ""
+                except Exception as ex:
+                    logger.warning(f"Gemini 응답 텍스트 추출 실패: {ex}")
+                    content = ""
+
+                # finish_reason 추출(가능한 경우)
+                finish_reason = None
+                try:
+                    if hasattr(response, 'candidates') and response.candidates:
+                        finish_reason = getattr(response.candidates[0], 'finish_reason', None)
+                    else:
+                        finish_reason = getattr(response, 'finish_reason', None)
+                except Exception:
+                    finish_reason = None
+                if not content:
+                    logger.error(
+                        f"Gemini 응답이 비어있습니다. finish_reason={finish_reason} (prompt 길이={len(prompt)})"
+                    )
+                    # 요청 프롬프트도 함께 기록(사후 진단용)
+                    try:
+                        logger.error("Gemini 요청 프롬프트(빈 응답 발생 시점):\n" + prompt)
+                    except Exception:
+                        pass
+                    # 내용이 비어도 예외 대신 빈 응답을 반환하여 상위 로직이 폴백하도록 함
+                    return LLMResponse(
+                        content="",
+                        model=self.model_name,
+                        usage={"input_tokens": len(prompt.split()), "output_tokens": 0},
+                        metadata={"finish_reason": finish_reason or "unknown"}
+                    )
+
                 return LLMResponse(
                     content=content,
                     model=self.model_name,
@@ -204,8 +291,18 @@ class GeminiProvider(LLMProvider):
                 raise LLMProviderError("모델의 generate_content 메서드를 찾을 수 없습니다.")
                 
         except Exception as e:
+            # 내부 오류(500 등) — 문제 재현을 위해 직전 프롬프트 전체를 로그에 남김
             logger.error(f"Gemini 응답 생성 중 오류: {e}")
-            raise LLMProviderError(f"응답 생성 실패: {e}")
+            try:
+                logger.error("Gemini 요청 프롬프트(에러 직전):\n" + (prompt if 'prompt' in locals() else '(프롬프트 미생성)'))
+            except Exception:
+                pass
+            return LLMResponse(
+                content="",
+                model=self.model_name or "gemini",
+                usage={"input_tokens": 0, "output_tokens": 0},
+                metadata={"error": str(e)}
+            )
     
     async def stream_generate(self, messages: List[Dict[str, str]], **kwargs) -> AsyncGenerator[str, None]:
         """스트림 형태로 응답 생성"""

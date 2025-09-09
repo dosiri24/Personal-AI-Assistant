@@ -176,8 +176,9 @@ def execute(tool_name, parameters, sync):
             # 실행 정보
             click.echo("")
             click.echo("📊 실행 정보:")
+            exec_time = result.result.execution_time if result.result.execution_time is not None else 0.0
             click.echo(f"   실행 ID: {result.context.execution_id}")
-            click.echo(f"   실행 시간: {result.result.execution_time:.3f}초")
+            click.echo(f"   실행 시간: {exec_time:.3f}초")
             click.echo(f"   상태: {result.result.status.value}")
             
             # 리소스 사용량

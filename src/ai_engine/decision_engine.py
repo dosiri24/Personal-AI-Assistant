@@ -148,6 +148,18 @@ class AgenticDecisionEngine:
                 required_params=["operation", "a", "b"],
                 optional_params=["precision"]
             )
+            ,
+            Tool(
+                name="filesystem",
+                description="로컬 파일/디렉토리 작업(list/stat/move/copy/mkdir/delete)을 수행합니다",
+                capabilities=[
+                    "디렉토리 목록", "파일 정보",
+                    "파일/폴더 이동", "파일/폴더 복사",
+                    "디렉토리 생성", "휴지통 이동", "영구 삭제"
+                ],
+                required_params=["action"],
+                optional_params=["src", "dst", "path", "recursive", "overwrite", "include_hidden", "max_items", "parents", "force", "dry_run"]
+            )
         ]
         
         for tool in default_tools:
