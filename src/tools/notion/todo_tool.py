@@ -7,6 +7,7 @@ Notion 할일 데이터베이스를 관리하는 MCP 도구입니다.
 
 import asyncio
 from datetime import datetime, timedelta
+import re
 from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field
@@ -140,7 +141,7 @@ class TodoTool(BaseTool):
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
-                description="필터 조건 (all, pending, completed, overdue)",
+                description="필터 조건 (기본: pending) — all | pending(완료 아님) | completed(완료) | overdue(기한 지남)",
                 required=False
             ),
             ToolParameter(
@@ -151,6 +152,13 @@ class TodoTool(BaseTool):
                 default=5,
                 min_value=1,
                 max_value=100
+            )
+            ,
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="제목 부분 검색(contains) 토큰. 공백/단어 단위로 분해해 모두 포함하는 항목만 조회",
+                required=False
             )
         ]
         
@@ -304,8 +312,23 @@ class TodoTool(BaseTool):
     async def _list_todos(self, params: Dict[str, Any]) -> ToolResult:
         """할일 목록 조회"""
         try:
-            filter_type = params.get("filter", "all").lower()
+            # filter 기본은 'pending' (완료 아님)
+            raw_filter = (params.get("filter") or "pending").strip().lower()
+            # 한국어/자연어 동의어 매핑
+            synonym_map = {
+                "pending": {"pending", "미완료", "완료아님", "완료 아님", "예정", "진행중", "진행 중"},
+                "completed": {"completed", "완료"},
+                "overdue": {"overdue", "연체", "기한지남", "기한 지남", "지남"},
+                "all": {"all", "전체", "모두"},
+            }
+            def _canon_filter(s: str) -> str:
+                for k, vs in synonym_map.items():
+                    if s in vs:
+                        return k
+                return s
+            filter_type = _canon_filter(raw_filter)
             limit = params.get("limit", 5)  # 기본값을 5개로 설정
+            query = (params.get("query") or "").strip()
             
             # limit 유효성 검사
             if isinstance(limit, str):
@@ -317,53 +340,27 @@ class TodoTool(BaseTool):
             # 최대 100개로 제한
             limit = min(max(1, limit), 100)
             
-            # 필터 조건 생성
-            filter_criteria = None
+            # 필터 조건 생성 (한국어 속성 기준)
+            criteria: List[Dict[str, Any]] = []
             if filter_type == "pending":
-                filter_criteria = {
-                    "and": [
-                        {
-                            "property": "Status",
-                            "select": {
-                                "does_not_equal": "Completed"
-                            }
-                        },
-                        {
-                            "property": "Status", 
-                            "select": {
-                                "does_not_equal": "Cancelled"
-                            }
-                        }
-                    ]
-                }
+                criteria.append({"property": "작업상태", "status": {"does_not_equal": "완료"}})
             elif filter_type == "completed":
-                filter_criteria = {
-                    "property": "Status",
-                    "select": {
-                        "equals": "Completed"
-                    }
-                }
+                criteria.append({"property": "작업상태", "status": {"equals": "완료"}})
             elif filter_type == "overdue":
-                now = datetime.now(timezone.utc)
-                filter_criteria = {
-                    "and": [
-                        {
-                            "property": "Due Date",
-                            "date": {
-                                "before": now.isoformat()
-                            }
-                        },
-                        {
-                            "property": "Status",
-                            "select": {
-                                "does_not_equal": "Completed"
-                            }
-                        }
-                    ]
-                }
-            
-            # 정렬 제거 (데이터베이스에 Priority 속성이 없을 수 있음)
-            sorts = None
+                now_local = datetime.now(ZoneInfo(self.settings.default_timezone))
+                criteria.append({"property": "마감일", "date": {"before": now_local.isoformat()}})
+                criteria.append({"property": "작업상태", "status": {"does_not_equal": "완료"}})
+
+            # 제목 부분 검색(query): 공백/단어 단위 토큰 모두 포함
+            if query:
+                tokens = re.findall(r"[\w가-힣]+", query)
+                for tk in tokens:
+                    criteria.append({"property": "작업명", "title": {"contains": tk}})
+
+            filter_criteria = {"and": criteria} if criteria else None
+
+            # 정렬: 마감일 오름차순(있을 때)
+            sorts = [{"property": "마감일", "direction": "ascending"}] if filter_type in {"pending", "overdue"} else None
             
             # 데이터베이스 쿼리
             if not self.database_id:

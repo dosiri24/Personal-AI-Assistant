@@ -771,6 +771,10 @@ class MCPIntegration:
                 "- 문서류(.hwpx/.hwp/.docx/.pdf/.txt)와 얕은 경로를 선호.\n"
                 "- 노이즈(Thumbs.db, .DS_Store, desktop.ini)는 제외.\n"
             )
+            # 단일 후보면 바로 선택
+            if len(candidates) == 1:
+                logger.info("Agentic: 후보 1개 — 자동 선택(0)")
+                return 0
             # 개인정보/경로 노출 최소화를 위해 파일명만 표시
             lines = [
                 f"[사용자 요청] {user_input}",
@@ -819,9 +823,17 @@ class MCPIntegration:
             # 3) 유니코드 정규화 기반 느슨한 일치
             try:
                 norm_out = self._norm(out)
+                # 동등 비교
                 for i, c in enumerate(candidates):
-                    if norm_out == self._norm(c.get('name','') or ''):
+                    norm_name = self._norm(c.get('name','') or '')
+                    if norm_out == norm_name:
                         logger.info(f"Agentic(FS): 후보 선택(정규화 일치) — name='{c.get('name','')}', index={i}")
+                        return i
+                # 포함 관계(예: '…하기' vs '…')
+                for i, c in enumerate(candidates):
+                    norm_name = self._norm(c.get('name','') or '')
+                    if norm_name and (norm_name in norm_out or norm_out in norm_name):
+                        logger.info(f"Agentic(FS): 후보 선택(부분 일치) — name='{c.get('name','')}', index={i}")
                         return i
             except Exception:
                 pass
@@ -861,6 +873,79 @@ class MCPIntegration:
             return content
         except Exception as e:
             logger.error(f"메모 본문 LLM 보강 실패: {e}")
+            return None
+
+    async def _llm_next_step_from_todos(
+        self,
+        title_hint: Optional[str],
+        todos: list[dict],
+        desired_action: str
+    ) -> Optional[Dict[str, Any]]:
+        """LLM에게 후보 Todo 목록을 제공하고, 자연어로 다음 도구 스텝을 산출하도록 요청.
+
+        기대 형식 (자연어, JSON 금지):
+        TOOL: notion_todo
+        ACTION: complete | update | delete
+        PARAMS: todo_id=<ID>
+        """
+        try:
+            if not todos:
+                return None
+            # 프롬프트 구성 (ID를 포함해 확실히 선택하게 함)
+            sys = (
+                "너는 도구를 조합해 사용자를 돕는 에이전트야.\n"
+                "- 아래 Todo 후보 목록과 사용자의 의도를 바탕으로, 다음에 수행할 하나의 도구 스텝을 제시해.\n"
+                "- 형식은 자연어로만, 아래 3줄로 시작해야 해.\n"
+                "  1) TOOL: notion_todo\n  2) ACTION: complete/update/delete 중 하나\n  3) PARAMS: todo_id=<ID> (반드시 후보에서 제공한 id 그대로)\n"
+                "- 코드블록/마크다운/설명은 금지. 위 3줄 뒤에는 아무것도 쓰지 마."
+            )
+            lines = []
+            if title_hint:
+                lines.append(f"[사용자 힌트] {title_hint}")
+            lines.append(f"[원하는 작업] {desired_action}")
+            lines.append("")
+            lines.append("[후보 목록] id — title (due)")
+            from datetime import datetime
+            def _fmt_due(d: Optional[str]) -> str:
+                if not d:
+                    return "마감 미정"
+                try:
+                    dt = datetime.fromisoformat(d.replace('Z','+00:00'))
+                    return dt.strftime('%m-%d %H:%M')
+                except Exception:
+                    return d
+            for td in todos:
+                lines.append(f"- {td.get('id','')} — {td.get('title','')} ({_fmt_due(td.get('due_date'))})")
+            user = "\n".join(lines)
+            msgs = [ChatMessage(role="system", content=sys), ChatMessage(role="user", content=user)]
+            resp = await self.llm_provider.generate_response(msgs, temperature=0.0)
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                s = text.find("\n"); e = text.rfind("```")
+                if s != -1 and e != -1:
+                    text = text[s+1:e].strip()
+            # 간단 파싱
+            tool = None; action = None; params_line = None
+            for line in text.splitlines():
+                if line.upper().startswith("TOOL:"):
+                    tool = line.split(":", 1)[1].strip()
+                elif line.upper().startswith("ACTION:"):
+                    action = line.split(":", 1)[1].strip().lower()
+                elif line.upper().startswith("PARAMS:"):
+                    params_line = line.split(":", 1)[1].strip()
+            if (tool or "").lower() != "notion_todo":
+                return None
+            if action not in {"complete", "update", "delete"}:
+                return None
+            todo_id = None
+            if params_line and "todo_id=" in params_line:
+                todo_id = params_line.split("todo_id=", 1)[1].strip().split()[0]
+                # 불필요한 구분자 제거
+                todo_id = todo_id.strip('"\' ,;')
+            if not todo_id:
+                return None
+            return {"action": action, "todo_id": todo_id}
+        except Exception:
             return None
 
     async def _friendly_reply(self, user_input: str, hint: Optional[str] = None) -> str:
@@ -1245,7 +1330,7 @@ class MCPIntegration:
                         "delete": {"delete", "삭제", "제거"},
                         "get": {"get", "조회", "확인", "보기"},
                         "list": {"list", "목록", "리스트"},
-                        "complete": {"complete", "완료", "끝"},
+                        "complete": {"complete", "완료", "끝", "할일완료", "할일 완료", "완료로", "완료로바꿔줘", "완료로 바꿔줘"},
                     }, a)
                 elif tool_name == "notion_calendar":
                     params["action"] = _canon({
@@ -1455,37 +1540,60 @@ class MCPIntegration:
             return params
 
     async def _self_repair_parameters(self, tool_name: str, params: Dict[str, Any], error_message: Optional[str]) -> Optional[Dict[str, Any]]:
-        """LLM을 사용해 파라미터를 자기교정하여 재시도할 수 있도록 합니다."""
+        """파라미터 자기교정 — LLM JSON 강제 사용 제거, 도메인별 휴리스틱 적용.
+
+        현재 지원:
+        - notion_todo: action이 complete/update/delete인데 todo_id가 없고 제목 단서가 있으면 목록에서 ID 탐색
+        """
         try:
-            metadata = self.tool_registry.get_tool_metadata(tool_name)
-            schema_desc = ""
-            if metadata:
-                schema_desc = json.dumps({
-                    "name": metadata.name,
-                    "parameters": [p.to_dict() for p in metadata.parameters]
-                }, ensure_ascii=False)
-            system = (
-                "너는 MCP 도구 실행을 도와주는 AI야.\n"
-                "- 아래 도구 스키마와 이전 파라미터, 에러 메시지를 참고해 올바른 JSON 파라미터를 생성해.\n"
-                "- 출력은 JSON 하나만, 코드블록 없이.\n"
-            )
-            user = (
-                f"[도구] {tool_name}\n[스키마]\n{schema_desc}\n\n"
-                f"[이전 파라미터]\n{json.dumps(params, ensure_ascii=False)}\n\n"
-                f"[에러]\n{error_message or ''}\n\n"
-                "요구사항: 유효한 파라미터 JSON만 반환하고, 누락값을 보완해줘."
-            )
-            msgs = [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)]
-            resp = await self.llm_provider.generate_response(msgs, temperature=0.1, max_tokens=800)
-            content = resp.content.strip()
-            if content.startswith("```"):
-                start = content.find("\n")
-                end = content.rfind("```")
-                if start != -1 and end != -1:
-                    content = content[start+1:end].strip()
-            repaired = json.loads(content)
-            if isinstance(repaired, dict):
-                return repaired
+            if not isinstance(params, dict):
+                return None
+            # 공통: action 소문자/공백 제거 맵핑
+            action = str(params.get("action") or "").strip().lower()
+            if tool_name == "notion_todo":
+                # 제목 단서
+                title_hint = None
+                for key in ("target_title", "title"):
+                    v = params.get(key)
+                    if isinstance(v, str) and v.strip():
+                        title_hint = v.strip()
+                        break
+                todo_id = params.get("todo_id") or params.get("id")
+                # action 정규화 (보수적)
+                if action in {"할일 완료", "할일완료", "완료로", "완료로바꿔줘", "완료로 바꿔줘"}:
+                    params["action"] = "complete"
+                    action = "complete"
+                # ID가 없으면 LLM에게 후보 목록을 주고 '다음 도구 스텝'을 자연어로 생성하게 함 (pending 기본)
+                if (action in {"complete", "update", "delete"}) and (not todo_id):
+                    try:
+                        MAX_CANDS = int(os.getenv("PAI_NOTION_TODO_LLM_CANDIDATES", "25"))
+                        # 1) 미완료 목록 우선
+                        lst = await self.tool_executor.execute_tool(
+                            "notion_todo", {"action": "list", "filter": "pending", "limit": MAX_CANDS}
+                        )
+                        todos: list[dict] = []
+                        if lst.result.is_success and isinstance(lst.result.data, dict):
+                            todos = lst.result.data.get("todos", []) or []
+                        # 2) 비어있으면 전체 목록 제한 조회
+                        if not todos:
+                            lst2 = await self.tool_executor.execute_tool(
+                                "notion_todo", {"action": "list", "filter": "all", "limit": MAX_CANDS}
+                            )
+                            if lst2.result.is_success and isinstance(lst2.result.data, dict):
+                                todos = lst2.result.data.get("todos", []) or []
+                        if not todos:
+                            return None
+                        # LLM에게 다음 스텝(TOOL/ACTION/PARAMS) 결정을 위임
+                        next_step = await self._llm_next_step_from_todos(title_hint, todos, desired_action=action)
+                        if not next_step or not next_step.get("todo_id"):
+                            return None
+                        # LLM이 액션을 바꿀 수 있으나, 현재는 같은 액션만 허용(원하면 반영 가능)
+                        params["todo_id"] = next_step["todo_id"]
+                        logger.info(f"Self-repair(notion_todo): LLM 스텝 — action={next_step.get('action')}, id={next_step.get('todo_id')[:8]}…")
+                        return params
+                    except Exception:
+                        return None
+            # 기타 도구는 휴리스틱 없음
             return None
         except Exception:
             return None

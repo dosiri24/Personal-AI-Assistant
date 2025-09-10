@@ -98,6 +98,10 @@ class DiscordBot:
         self._recent_message_set = set()
         # Reminder task
         self._reminder_task: Optional[asyncio.Task] = None
+        # Proactive todo nudge task (every N minutes)
+        self._proactive_task: Optional[asyncio.Task] = None
+        self._proactive_seen: dict[str, float] = {}
+        self._proactive_llm = None  # lightweight LLM provider for proactive nudges
     
     def _parse_user_ids(self, user_ids_str: str) -> set[int]:
         """
@@ -170,6 +174,14 @@ class DiscordBot:
                     self.logger.info("정각 리마인더 루프 시작")
             except Exception as e:
                 self.logger.warning(f"리마인더 루프 시작 실패: {e}")
+
+            # Proactive todo nudge 루프 시작
+            try:
+                if self._proactive_task is None and getattr(self.settings, 'proactive_enabled', False):
+                    self._proactive_task = asyncio.create_task(self._proactive_todo_loop())
+                    self.logger.info("프로액티브 Todo 선톡 루프 시작")
+            except Exception as e:
+                self.logger.warning(f"프로액티브 선톡 루프 시작 실패: {e}")
         
         @self.bot.event
         async def on_disconnect():
@@ -462,6 +474,12 @@ class DiscordBot:
                     self._reminder_task.cancel()
             except Exception:
                 pass
+            # 프로액티브 태스크 취소
+            try:
+                if self._proactive_task and not self._proactive_task.done():
+                    self._proactive_task.cancel()
+            except Exception:
+                pass
 
     async def _reminder_loop(self):
         """매 정각마다 Notion Todo의 '예정' 상태 중 마감 임박 항목을 확인하여 알림"""
@@ -607,6 +625,201 @@ class DiscordBot:
                 break
             except Exception as e:
                 self.logger.warning(f"리마인더 루프 오류: {e}")
+
+    async def _proactive_todo_loop(self):
+        """매 N분마다 Notion Todo에서 '완료'가 아닌 항목을 가져와 프리엠티브 선톡.
+
+        - 필터: 작업상태 != 완료
+        - 정렬: 마감일 오름차순(있으면)
+        - 창: 설정의 proactive_window_minutes 내 마감 또는 마감일 없음
+        - 메시지: LLM이 간단하게 한국어로 선톡을 작성
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime, timedelta
+            from src.tools.notion.client import NotionClient
+            # LLM: lightweight provider 직접 사용 (AI Handler 초기화 회피)
+            from src.ai_engine.llm_provider import GeminiProvider, ChatMessage
+        except Exception as e:
+            self.logger.warning(f"프로액티브 선톡 초기 임포트 실패: {e}")
+            return
+
+        tz = ZoneInfo(self.settings.default_timezone)
+        interval = max(1, int(getattr(self.settings, 'proactive_interval_minutes', 10)))
+        window = timedelta(minutes=int(getattr(self.settings, 'proactive_window_minutes', 360)))
+
+        # Notion 클라이언트 준비
+        try:
+            notion = NotionClient(use_async=True)
+        except Exception as e:
+            self.logger.warning(f"프로액티브 선톡용 Notion 클라이언트 초기화 실패: {e}")
+            return
+
+        def _get_targets(pages: list[dict]) -> list[tuple[str, Optional[datetime], str, str]]:
+            targets: list[tuple[str, Optional[datetime], str, str]] = []
+            for page in pages:
+                try:
+                    pid = page.get("id", "")
+                    props = page.get("properties", {})
+                    # 제목
+                    title = ""
+                    if "작업명" in props and props["작업명"].get("title"):
+                        tl = props["작업명"]["title"]
+                        if tl and tl[0].get("text"):
+                            title = tl[0]["text"]["content"]
+                    # 마감
+                    due_str = None
+                    if "마감일" in props and props["마감일"].get("date"):
+                        due_str = props["마감일"]["date"].get("start")
+                    due_local = None
+                    if due_str:
+                        try:
+                            d = datetime.fromisoformat(due_str.replace('Z', '+00:00'))
+                            due_local = d.astimezone(tz) if d.tzinfo else d.replace(tzinfo=tz)
+                        except Exception:
+                            pass
+                    url = page.get("url", "")
+                    status = None
+                    if "작업상태" in props and props["작업상태"].get("status"):
+                        status = props["작업상태"]["status"].get("name")
+                    if title:
+                        targets.append((pid, due_local, title, url))
+                except Exception:
+                    continue
+            return targets
+
+        while self.is_running:
+            try:
+                await asyncio.sleep(interval * 60)
+
+                db_id = getattr(self.settings, 'notion_todo_database_id', None)
+                if not db_id:
+                    self.logger.debug("프로액티브: Notion Todo DB 미설정, 건너뜀")
+                    continue
+
+                now = datetime.now(tz)
+                horizon = now + window
+
+                # 상태 != 완료, 마감일이 없거나 horizon 이전
+                filter_criteria = {
+                    "and": [
+                        {"property": "작업상태", "status": {"does_not_equal": "완료"}},
+                        {"or": [
+                            {"property": "마감일", "date": {"is_empty": True}},
+                            {"property": "마감일", "date": {"on_or_before": horizon.isoformat()}}
+                        ]}
+                    ]
+                }
+
+                try:
+                    result = await notion.query_database(
+                        database_id=db_id,
+                        filter_criteria=filter_criteria,
+                        sorts=[{"property": "마감일", "direction": "ascending"}],
+                        page_size=50,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"프로액티브: Notion 쿼리 실패: {e}")
+                    continue
+
+                pages = (result or {}).get("results", [])
+                if not pages:
+                    continue
+
+                targets = _get_targets(pages)
+                if not targets:
+                    continue
+
+                # 중복 방지: 최근 전송한 항목 제외 (3시간 내)
+                dedup_targets: list[tuple[str, Optional[datetime], str, str]] = []
+                for pid, due_local, title, url in targets:
+                    ts = self._proactive_seen.get(pid)
+                    if ts and (now.timestamp() - ts) < window.total_seconds():
+                        continue
+                    dedup_targets.append((pid, due_local, title, url))
+                if not dedup_targets:
+                    continue
+
+                # 메시지 생성(LLM): 친근한 선톡 톤으로 1~3문장 (경량 LLM 사용)
+                prov = self._proactive_llm
+                if prov is None:
+                    try:
+                        from src.config import Settings
+                        prov = GeminiProvider(Settings())
+                        ok = await prov.initialize()
+                        if not ok:
+                            prov = None
+                        else:
+                            self._proactive_llm = prov
+                            self.logger.info("프로액티브: 경량 LLM Provider 초기화 완료")
+                    except Exception as e:
+                        self.logger.warning(f"프로액티브: 경량 LLM Provider 초기화 실패 — {e}")
+                        prov = None
+                lines = []
+                for pid, due_local, title, url in dedup_targets[:10]:
+                    when = due_local.strftime('%m-%d %H:%M') if due_local else '마감 미정'
+                    # 링크는 넣지 않음 (요청 사항)
+                    lines.append(f"• {title} (마감: {when})")
+                listing = "\n".join(lines)
+
+                content = None
+                if prov and prov.is_available():
+                    sys_msg = (
+                        "너는 Discord에서 사용자를 도와주는 비서야.\n"
+                        "- 아래 '진행 중/예정' 할일 목록을 바탕으로, 친근하게 선제 메시지를 1~3문장으로 작성해.\n"
+                        "- 과장/사족 없이 핵심만. 한국어. 이모지 1~2개 허용.\n"
+                        "- 링크 언급 금지. 너무 딱딱하지 않게, 부담 낮게 권유.\n"
+                    )
+                    usr = (
+                        f"[기준시각] {now.strftime('%Y-%m-%d %H:%M %Z')}\n"
+                        f"[할일 목록]\n{listing}\n\n"
+                        "사용자가 부담 없이 빠르게 확인/진행을 결정할 수 있도록 부드럽게 권유해줘."
+                    )
+                    try:
+                        resp = await prov.generate_response([
+                            ChatMessage(role='system', content=sys_msg),
+                            ChatMessage(role='user', content=usr)
+                        ], temperature=0.3)
+                        content = (resp.content or "").strip()
+                    except Exception as e:
+                        self.logger.warning(f"프로액티브: LLM 생성 실패 — {e}")
+
+                if not content:
+                    # LLM 실패 시 기본 포맷 (친근, 링크 없음)
+                    header = f"미완료 할 일 알림 — {now.strftime('%Y-%m-%d %H:%M')}"
+                    intro = "잠깐 체크해 보실 만한 항목들이 있어요:"  # 가벼운 안내
+                    content = header + "\n\n" + intro + "\n" + listing
+
+                # 전송: 채널 우선, 없으면 관리자 DM
+                sent = False
+                ch_id = getattr(self.settings, 'proactive_channel_id', None) or getattr(self.settings, 'reminder_channel_id', None)
+                if ch_id:
+                    try:
+                        channel = self.bot.get_channel(ch_id) or await self.bot.fetch_channel(ch_id)
+                        if channel:
+                            await channel.send(content)
+                            sent = True
+                    except Exception as e:
+                        self.logger.warning(f"프로액티브 채널 전송 실패({ch_id}): {e}")
+                if not sent:
+                    # 관리자 DM
+                    admins = self._parse_user_ids(self.settings.admin_user_ids)
+                    for aid in admins:
+                        try:
+                            user = self.bot.get_user(aid) or await self.bot.fetch_user(aid)
+                            if user:
+                                await user.send(content)
+                                sent = True
+                        except Exception as e:
+                            self.logger.warning(f"프로액티브 DM 실패({aid}): {e}")
+                # 전송 성공 시, 본 항목들 기록
+                if sent:
+                    for pid, _, _, _ in dedup_targets:
+                        self._proactive_seen[pid] = now.timestamp()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.warning(f"프로액티브 루프 오류: {e}")
 
     def get_status(self) -> dict[str, Any]:
         """

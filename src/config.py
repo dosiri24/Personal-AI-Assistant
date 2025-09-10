@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     reminder_enabled: bool = Field(default=True, description="정각 리마인더 기능 활성화")
     reminder_threshold_minutes: int = Field(default=120, description="마감 임박 임계값 (분)")
     reminder_channel_id: Optional[int] = Field(default=None, description="선톡을 보낼 Discord 채널 ID")
+    # Proactive todo nudge
+    proactive_enabled: bool = Field(default=True, description="프리엠티브 Notion Todo 선톡 활성화")
+    proactive_interval_minutes: int = Field(default=10, description="선톡 주기 (분)")
+    proactive_window_minutes: int = Field(default=360, description="선톡 대상으로 고려할 마감까지의 시간 창 (분)")
+    proactive_channel_id: Optional[int] = Field(default=None, description="선톡 기본 채널 ID (없으면 관리자 DM)")
     
     
     def has_valid_api_key(self) -> bool:
