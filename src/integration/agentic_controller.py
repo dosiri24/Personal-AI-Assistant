@@ -401,6 +401,30 @@ class AgenticController:
         """완전 LLM 기반 복잡도 분석 - 동적 점수 계산"""
         logger.debug(f"복잡도 분석 시작: '{user_input[:30]}...'")
         
+        # 빠른 휴리스틱 판단 (간단한 패턴)
+        simple_patterns = ['안녕', '고마워', '감사', '네', '아니오', '좋아', '싫어']
+        todo_patterns = ['todo', '할일', '추가해줘', '만들어줘']
+        
+        user_lower = user_input.lower()
+        
+        # 매우 간단한 요청 (1-2점)
+        if any(pattern in user_lower for pattern in simple_patterns) and len(user_input) < 20:
+            return {
+                'use_react': False,  # 간단한 요청은 ReAct 불필요
+                'complexity': 'simple',
+                'complexity_score': 2,
+                'reasoning': '간단한 응답 요청'
+            }
+        
+        # TODO 관련 단순 요청 (4-5점)
+        if any(pattern in user_lower for pattern in todo_patterns) and ',' not in user_input:
+            return {
+                'use_react': True,   # TODO 작업은 ReAct 필요
+                'complexity': 'medium',
+                'complexity_score': 4,
+                'reasoning': '단일 TODO 작업'
+            }
+        
         try:
             from ..ai_engine.llm_provider import ChatMessage
             
@@ -423,8 +447,8 @@ class AgenticController:
             
             response = await self.llm_provider.generate_response(
                 messages, 
-                temperature=0.3,
-                max_tokens=32768
+                temperature=0.2,  # 빠른 판단을 위해 온도 감소
+                max_tokens=512    # 복잡도 분석 토큰 대폭 축소
             )
             
             if response and response.content:

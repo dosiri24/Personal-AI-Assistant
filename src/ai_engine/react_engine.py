@@ -462,8 +462,8 @@ class ReactEngine:
             logger.debug("LLM에게 사고 분석 요청 중...")
             response = await self.llm_provider.generate_response(
                 messages=messages,
-                temperature=0.7,  # 창의적 사고를 위해 적당한 온도
-                max_tokens=8192  # 사고 과정 토큰 수 대폭 축소
+                temperature=0.4,  # 빠른 결정을 위해 온도 감소
+                max_tokens=4096  # 사고 과정 토큰 수 적절히 증가 (2048->4096)
             )
             
             thought_content = response.content.strip()
@@ -502,8 +502,16 @@ class ReactEngine:
         logger.debug(f"행동 결정 시작: 사고신뢰도={thought.confidence:.2f}")
         
         try:
+            # 컨텍스트에 날짜가 있고 system_time 호출이 불필요한지 확인
+            has_date_context = self._has_date_in_context(context, thought)
+            
             # 사용 가능한 도구 정보 수집 (자세한 메타데이터 포함)
             tools_info = self._get_available_tools_info()
+            
+            # 날짜 컨텍스트가 있으면 system_time 도구 제외
+            if has_date_context:
+                tools_info = [tool for tool in tools_info if tool['name'] != 'system_time']
+                logger.debug("컨텍스트에 날짜 정보가 있어 system_time 도구 제외")
             
             logger.debug(f"사용가능 도구: {len(tools_info)}개 ({[t['name'] for t in tools_info[:3]]}...)")
             
@@ -661,8 +669,13 @@ class ReactEngine:
         return observation
     
     async def _is_goal_achieved(self, scratchpad: AgentScratchpad, context: AgentContext) -> bool:
-        """목표 달성 여부를 LLM이 판단"""
+        """목표 달성 여부를 판단 (휴리스틱 + LLM)"""
         logger.debug(f"목표 달성 여부 확인: 현재단계={len(scratchpad.steps)}")
+        
+        # 1. 빠른 휴리스틱 판단
+        if self._quick_goal_check(scratchpad, context):
+            logger.info("휴리스틱으로 목표 달성 확인됨")
+            return True
         
         try:
             # 목표 달성 판단 프롬프트
@@ -755,8 +768,8 @@ class ReactEngine:
         logger.debug("LLM에게 최종 답변 생성 요청 중...")
         response = await self.llm_provider.generate_response(
             messages=messages,
-            temperature=0.3,  # 더 일관된 간결한 응답을 위해 낮춤
-            max_tokens=512    # 토큰 수를 제한하여 간결함 강제
+            temperature=0.3  # 더 일관된 간결한 응답을 위해 낮춤
+            # max_tokens 제거 - 자동으로 적절한 길이 생성
         )
         
         final_answer = response.content.strip()
@@ -794,8 +807,8 @@ class ReactEngine:
         logger.debug("LLM에게 부분 결과 생성 요청 중...")
         response = await self.llm_provider.generate_response(
             messages=messages,
-            temperature=0.3,
-            max_tokens=256  # 더 간결하게
+            temperature=0.3
+            # max_tokens 제거 - 자동으로 적절한 길이 생성
         )
         
         partial_result = response.content.strip()
@@ -1033,3 +1046,55 @@ class ReactEngine:
             lessons.append("리소스를 찾을 수 없음 - 사전 존재 여부 확인 필요")
         
         return lessons
+    
+    def _has_date_in_context(self, context: AgentContext, thought: ThoughtRecord) -> bool:
+        """컨텍스트에 날짜 정보가 있는지 확인"""
+        # 목표에 날짜 관련 키워드가 있는지 확인
+        date_keywords = ['오늘', '내일', '모레', '이번주', '다음주', '월요일', '화요일', '수요일', 
+                        '목요일', '금요일', '토요일', '일요일', '시까지', '시간', '날짜']
+        
+        goal_lower = context.goal.lower()
+        
+        # 구체적인 날짜나 시간이 명시된 경우
+        if any(keyword in goal_lower for keyword in date_keywords):
+            # 사고 과정에서 이미 시간을 파악했다고 언급했는지 확인
+            thought_lower = thought.content.lower()
+            if '오늘' in thought_lower or '현재' in thought_lower or '2025' in thought_lower:
+                return True
+        
+        return False
+    
+    def _quick_goal_check(self, scratchpad: AgentScratchpad, context: AgentContext) -> bool:
+        """빠른 휴리스틱 목표 달성 판단"""
+        if not scratchpad.steps:
+            return False
+            
+        last_step = scratchpad.steps[-1]
+        if not last_step.observation or not last_step.observation.success:
+            return False
+            
+        goal_lower = context.goal.lower()
+        
+        # TODO 관련 작업 휴리스틱
+        if 'todo' in goal_lower and ('추가' in goal_lower or '만들' in goal_lower):
+            # notion_todo 도구가 성공했으면 달성
+            if (last_step.action and 
+                last_step.action.tool_name == 'notion_todo' and 
+                last_step.observation.success):
+                return True
+        
+        # 캘린더 관련 작업 휴리스틱  
+        if ('캘린더' in goal_lower or '일정' in goal_lower) and '추가' in goal_lower:
+            if (last_step.action and 
+                last_step.action.tool_name == 'apple_calendar' and 
+                last_step.observation.success):
+                return True
+        
+        # 연락처 관련 작업 휴리스틱
+        if '연락처' in goal_lower and '추가' in goal_lower:
+            if (last_step.action and 
+                last_step.action.tool_name == 'apple_contacts' and 
+                last_step.observation.success):
+                return True
+                
+        return False
