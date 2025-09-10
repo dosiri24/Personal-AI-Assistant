@@ -463,7 +463,7 @@ class ReactEngine:
             response = await self.llm_provider.generate_response(
                 messages=messages,
                 temperature=0.7,  # 창의적 사고를 위해 적당한 온도
-                max_tokens=32768
+                max_tokens=8192  # 사고 과정 토큰 수 대폭 축소
             )
             
             thought_content = response.content.strip()
@@ -521,7 +521,7 @@ class ReactEngine:
             response = await self.llm_provider.generate_response(
                 messages=messages,
                 temperature=0.3,  # 정확한 행동 결정을 위해 낮은 온도
-                max_tokens=32768,
+                max_tokens=4096,  # 행동 결정 토큰 수 축소
                 response_mime_type='application/json'
             )
             
@@ -722,97 +722,88 @@ class ReactEngine:
         """최종 답변 생성"""
         logger.debug(f"최종 답변 생성 시작: 단계={len(scratchpad.steps)}")
         
-        try:
-            system_prompt = """당신은 에이전트의 실행 결과를 종합하여 사용자에게 최종 답변을 제공하는 전문가입니다.
+        system_prompt = """당신은 매우 간결한 개인비서입니다. 작업 완료 후 사용자에게 초간단 보고를 하세요.
 
-지금까지의 실행 과정을 분석하여 사용자의 목표가 어떻게 달성되었는지 명확하고 유용한 답변을 생성하세요.
+필수 규칙:
+1. 최대 2줄 이내로만 답변
+2. "완료했어요" + 핵심 결과 1가지만
+3. � 친근한 어조로 마무리
+4. ❌ 긴 설명, 단계별 설명, 세부사항 절대 금지
+5. ❌ 마크다운 헤더(###) 사용 금지
 
-답변 요구사항:
-1. 수행된 주요 작업들을 요약
-2. 달성된 결과를 구체적으로 설명
-3. 사용자가 알아야 할 중요한 정보나 후속 조치 제안
-4. 친근하고 도움이 되는 어조 유지
+좋은 예시:
+"GPS 개론 복습하기를 오늘 8시까지 Notion에 추가했어요!"
+"계산 완료: 123 + 456 = 579입니다!"
 
-응답은 일반 텍스트로 하되, 마크다운 형식을 활용해도 좋습니다."""
-            
-            user_prompt = f"""목표: {context.goal}
+나쁜 예시:
+"### 작업 완료 보고\n상세한 설명..."
+"단계별로 설명드리면..."
+"""
+        
+        user_prompt = f"""작업: {context.goal}
 
-실행 과정:
+실행 결과:
 {scratchpad.get_formatted_history()}
 
-위 과정을 종합하여 사용자에게 최종 답변을 제공해주세요."""
-            
-            messages = [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=user_prompt)
-            ]
-            
-            logger.debug("LLM에게 최종 답변 생성 요청 중...")
-            response = await self.llm_provider.generate_response(
-                messages=messages,
-                temperature=0.5,
-                max_tokens=32768
-            )
-            
-            final_answer = response.content.strip()
-            logger.info(f"최종 답변 생성 완료: 길이={len(final_answer)}자")
-            
-            return final_answer
-            
-        except Exception as e:
-            logger.error(f"최종 답변 생성 실패: {e}")
-            # 기본 답변으로 폴백
-            fallback_answer = f"목표 '{context.goal}'에 대한 작업을 수행했지만 최종 답변 생성 중 오류가 발생했습니다: {str(e)}"
-            logger.warning("기본 답변으로 폴백 처리됨")
-            return fallback_answer
+위 작업을 완료했습니다. 사용자에게 간결하고 친절한 결과 보고를 해주세요."""
+        
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=user_prompt)
+        ]
+        
+        logger.debug("LLM에게 최종 답변 생성 요청 중...")
+        response = await self.llm_provider.generate_response(
+            messages=messages,
+            temperature=0.3,  # 더 일관된 간결한 응답을 위해 낮춤
+            max_tokens=512    # 토큰 수를 제한하여 간결함 강제
+        )
+        
+        final_answer = response.content.strip()
+        logger.info(f"최종 답변 생성 완료: 길이={len(final_answer)}자")
+        
+        return final_answer
 
     async def _generate_partial_result(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
         """부분 결과 생성 (최대 반복 도달 시)"""
         logger.debug(f"부분 결과 생성: 단계={len(scratchpad.steps)}")
         
-        try:
-            system_prompt = """에이전트가 최대 반복 횟수에 도달하여 목표를 완전히 달성하지 못했습니다.
+        system_prompt = """당신은 친절한 개인비서입니다. 작업이 완전히 끝나지 않았지만 지금까지의 진행 상황을 간결하게 보고하세요.
 
-지금까지의 진행 상황을 분석하여 사용자에게 부분 결과와 후속 조치를 안내하는 답변을 생성하세요.
+답변 요구사항:
+1. 작업이 진행 중임을 알려주기
+2. 완료된 부분이 있다면 간단히 언급
+3. 간단한 다음 단계 제안 (1가지만)
+4. 격려하는 어조로 마무리
+5. 최대 2-3줄로 간결하게
 
-포함할 내용:
-1. 지금까지 성공적으로 완료된 작업들
-2. 달성하지 못한 부분과 이유
-3. 사용자가 직접 수행할 수 있는 후속 조치
-4. 재시도를 위한 제안 사항
+피할 것: 기술적 용어, 긴 설명, 복잡한 지시사항"""
+        
+        user_prompt = f"""작업: {context.goal}
 
-친근하고 도움이 되는 어조로 답변해주세요."""
-            
-            user_prompt = f"""목표: {context.goal}
-
-실행 과정:
+진행 상황:
 {scratchpad.get_formatted_history()}
 
-부분 결과와 후속 조치를 포함한 답변을 생성해주세요."""
+작업이 아직 완료되지 않았습니다. 사용자에게 간결한 중간 보고를 해주세요."""
+        
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=user_prompt)
+        ]
+        
+        logger.debug("LLM에게 부분 결과 생성 요청 중...")
+        response = await self.llm_provider.generate_response(
+            messages=messages,
+            temperature=0.3,
+            max_tokens=256  # 더 간결하게
+        )
+        
+        partial_result = response.content.strip()
+        logger.info(f"부분 결과 생성 완료: 길이={len(partial_result)}자")
+        
+        return partial_result
             
-            messages = [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=user_prompt)
-            ]
-            
-            logger.debug("LLM에게 부분 결과 생성 요청 중...")
-            response = await self.llm_provider.generate_response(
-                messages=messages,
-                temperature=0.5,
-                max_tokens=32768
-            )
-            
-            partial_result = response.content.strip()
-            logger.info(f"부분 결과 생성 완료: 길이={len(partial_result)}자")
-            
-            return partial_result
-            
-        except Exception as e:
-            logger.error(f"부분 결과 생성 실패: {e}")
-            # 기본 부분 결과로 폴백
-            fallback_result = f"목표 '{context.goal}' 달성을 위해 {len(scratchpad.steps)}개의 단계를 수행했지만 최대 반복 횟수에 도달했습니다. 추가 작업이 필요할 수 있습니다."
-            logger.warning("기본 부분 결과로 폴백 처리됨")
-            return fallback_result
+
     
     # 헬퍼 메서드들
     
@@ -882,14 +873,20 @@ class ReactEngine:
 도구 선택 별칭(한국어 표현 → 도구명):
 {chr(10).join(alias_lines)}
 
-행동 결정 규칙(중요):
-1) 사용자의 의도가 도구로 실행 가능한 경우, 'final_answer' 대신 반드시 'tool_call'을 선택합니다.
-2) 파라미터는 메타데이터에 맞게 정확히 채웁니다. 날짜/시간은 ISO 형식(예: 2025-09-10T20:00:00+09:00)으로 변환하고, 시간대가 없으면 Asia/Seoul(+09:00)을 사용합니다.
-3) 정보가 모호하더라도 합리적인 기본값(예: 오늘 23:59 등)을 채우고, 필요한 경우 보충 질문은 다음 턴에서 요청한다고 가정합니다.
-4) 반드시 JSON 형식만 출력합니다.
+🚨 CRITICAL: 도구 사용 우선 규칙 🚨
+1) TODO 추가, 일정 추가, 계산, 파일 작업 등은 무조건 해당 도구를 사용해야 합니다
+2) 절대로 "사용자가 직접 하세요"라고 답하지 마세요 - 당신이 도구로 해결하세요
+3) 현재 날짜/시간이 필요하면 먼저 'system_time' 도구를 반드시 사용하세요
+4) final_answer는 정말 도구로 해결할 수 없는 경우에만 사용하세요
 
-응답 스키마 예시:
-도구 사용:
+행동 결정 규칙:
+1) 파라미터는 메타데이터에 맞게 정확히 채웁니다
+2) 날짜/시간은 ISO 형식(예: 2025-09-10T20:00:00+09:00)으로 변환
+3) 정보가 모호하면 합리적인 기본값 사용
+4) 반드시 JSON 형식만 출력
+
+응답 스키마 (정확한 필드명 사용 필수):
+도구 사용 (우선):
 {{
   "action_type": "tool_call",
   "tool_name": "notion_todo",
@@ -899,15 +896,17 @@ class ReactEngine:
     "due_date": "2025-09-10T20:00:00+09:00",
     "priority": "중간"
   }},
-  "reasoning": "사용자 요청이 '할일 추가'이므로 notion_todo로 생성"
+  "reasoning": "사용자가 todo 추가를 요청했으므로 notion_todo 도구 사용"
 }}
 
-최종 답변(도구 불필요/완료 시에만):
+최종 답변 (마지막 수단):
 {{
   "action_type": "final_answer",
   "answer": "직접 제공할 최종 답변",
   "reasoning": "도구 사용이 불필요하거나 목표 완료"
-}}"""
+}}
+
+⚠️ 중요: 반드시 "tool_name"과 "parameters"를 사용하세요. "function_name", "args" 등은 사용하지 마세요."""
     
     def _create_action_user_prompt(self, thought: ThoughtRecord, scratchpad: AgentScratchpad) -> str:
         """행동 결정을 위한 사용자 프롬프트"""
@@ -933,7 +932,27 @@ class ReactEngine:
                 end = content.find("```", start)
                 content = content[start:end].strip()
             
-            return json.loads(content)
+            action_data = json.loads(content)
+            
+            # 매개변수 형식 정규화 (function_name -> tool_name, args -> parameters)
+            if "function_name" in action_data and "tool_name" not in action_data:
+                logger.warning(f"잘못된 필드명 감지 및 수정: function_name -> tool_name")
+                action_data["tool_name"] = action_data.pop("function_name")
+            
+            if "args" in action_data and "parameters" not in action_data:
+                logger.warning(f"잘못된 필드명 감지 및 수정: args -> parameters")
+                args_data = action_data.pop("args")
+                if isinstance(args_data, dict):
+                    action_data["parameters"] = args_data
+                elif isinstance(args_data, list) and len(args_data) > 0:
+                    if isinstance(args_data[0], dict):
+                        action_data["parameters"] = args_data[0]
+                    else:
+                        action_data["parameters"] = {}
+                else:
+                    action_data["parameters"] = {}
+            
+            return action_data
         except json.JSONDecodeError:
             logger.warning(f"행동 응답 JSON 파싱 실패: {response_content}")
             # 폴백 금지: 상위에서 오류 처리하도록 예외 전파

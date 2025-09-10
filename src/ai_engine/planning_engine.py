@@ -240,7 +240,7 @@ class PlanningEngine:
    - 우선순위 (1-4, 4가 가장 높음)
 3. 단계 간 의존성이 있다면 명시해주세요
 
-응답은 반드시 다음 JSON 형식으로 해주세요:
+응답은 반드시 다음 JSON 형식으로 해주세요 (정확한 필드명 사용 필수):
 
 ```json
 {{
@@ -261,6 +261,8 @@ class PlanningEngine:
     ]
 }}
 ```
+
+⚠️ 주의: 반드시 "tool_name"과 "tool_params"를 사용하세요. "function_name"이나 "args" 같은 다른 필드명은 사용하지 마세요.
 """
         return prompt
     
@@ -280,12 +282,31 @@ class PlanningEngine:
             # PlanStep 객체로 변환
             steps = []
             for i, step_data in enumerate(plan_data.get("steps", [])):
+                # 매개변수 형식 정규화 (function_name -> tool_name, args -> tool_params)
+                tool_name = step_data.get("tool_name") or step_data.get("function_name")
+                tool_params = step_data.get("tool_params", {})
+                
+                # 잘못된 형식 사용 감지 및 정규화
+                if "function_name" in step_data:
+                    logger.warning(f"잘못된 필드명 감지 및 수정: function_name -> tool_name")
+                
+                if "args" in step_data:
+                    logger.warning(f"잘못된 필드명 감지 및 수정: args -> tool_params")
+                    # args가 있으면 tool_params로 변환
+                    args_data = step_data.get("args", {})
+                    if isinstance(args_data, dict):
+                        tool_params.update(args_data)
+                    elif isinstance(args_data, list) and len(args_data) > 0:
+                        # 리스트 형태면 첫 번째 요소가 딕셔너리인지 확인
+                        if isinstance(args_data[0], dict):
+                            tool_params.update(args_data[0])
+                
                 step = PlanStep(
                     step_id=step_data.get("step_id", f"step_{i+1}"),
                     description=step_data.get("description", ""),
                     action_type=step_data.get("action_type", "tool_call"),
-                    tool_name=step_data.get("tool_name"),
-                    tool_params=step_data.get("tool_params", {}),
+                    tool_name=tool_name,
+                    tool_params=tool_params,
                     dependencies=step_data.get("dependencies", []),
                     priority=TaskPriority(step_data.get("priority", 2)),
                     estimated_duration=step_data.get("estimated_duration", 30.0),

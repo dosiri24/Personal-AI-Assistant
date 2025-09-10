@@ -106,7 +106,20 @@ class MCPIntegration:
         discovered_count = await self.tool_registry.discover_tools(package_path)
         logger.info(f"발견된 도구 수: {discovered_count} (패키지: {package_path})")
 
-        # 2) Apple MCP 도구 수동 등록 (생성자 주입 필요)
+        # 2) 시스템 시간 도구 수동 등록
+        try:
+            from ..tools.system_time_tool import create_system_time_tool
+            system_time_tool = create_system_time_tool()
+            await system_time_tool.initialize()
+            ok = await self.tool_registry.register_tool_instance(system_time_tool)
+            if ok:
+                logger.info("시스템 시간 도구 등록 완료")
+            else:
+                logger.warning("시스템 시간 도구 등록 실패")
+        except Exception as e:
+            logger.warning(f"시스템 시간 도구 등록 건너뜀: {e}")
+
+        # 3) Apple MCP 도구 수동 등록 (생성자 주입 필요)
         try:
             from .apple_tools import register_apple_tools
             from .apple_client import AppleAppsManager
