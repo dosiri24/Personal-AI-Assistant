@@ -1,13 +1,17 @@
 """
-MCP 시스템 통합 모듈
+MCP 시스템 통합 모듈 (에이전틱 AI 업그레이드)
 
 AI 엔진과 MCP 도구들을 통합하여 실제 작업을 수행할 수 있도록 하는 모듈입니다.
+진정한 에이전틱 AI ReAct 엔진을 사용하면서 기존 인터페이스와의 호환성을 유지합니다.
 """
 
 import asyncio
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..integration.legacy_adapter import LegacyMCPAdapter
 from pathlib import Path
 import unicodedata
 import re
@@ -22,11 +26,18 @@ from .protocol import MCPMessage, MCPRequest, MCPResponse
 from ..config import get_settings
 from ..utils.logger import get_logger
 
+# 새로운 에이전틱 AI 시스템 import
+from ..integration.legacy_adapter import LegacyMCPAdapter
+
 logger = get_logger(__name__)
 
 
 class MCPIntegration:
-    """MCP 시스템과 AI 엔진을 통합하는 클래스"""
+    """
+    MCP 시스템과 AI 엔진을 통합하는 클래스 (에이전틱 AI 업그레이드)
+    
+    기존 인터페이스를 완전히 유지하면서 내부적으로는 진정한 에이전틱 AI를 사용합니다.
+    """
     
     def __init__(self):
         self.config = get_settings()
@@ -35,18 +46,44 @@ class MCPIntegration:
         self.llm_provider = GeminiProvider()
         
         self.prompt_manager = PromptManager()
+        
+        # 기존 decision_engine 유지 (하위 호환성)
         self.decision_engine = AgenticDecisionEngine(
             llm_provider=self.llm_provider,
             prompt_manager=self.prompt_manager
         )
+        
         self.tool_registry = ToolRegistry()
         self.tool_executor = ToolExecutor(self.tool_registry)
+        
+        # 새로운 에이전틱 AI 어댑터 초기화
+        self.agentic_adapter: Optional['LegacyMCPAdapter'] = None  # 지연 초기화
+        
+        # 에이전틱 모드 설정 (환경변수로 제어 가능)
+        self.agentic_enabled = os.getenv("PAI_AGENTIC_ENABLED", "true").lower() == "true"
+        
+        logger.info(f"MCP 통합 초기화 (에이전틱 모드: {'활성화' if self.agentic_enabled else '비활성화'})")
+    
+    async def _ensure_agentic_adapter(self):
+        """에이전틱 어댑터 지연 초기화"""
+        if self.agentic_adapter is None:
+            from ..integration.legacy_adapter import LegacyMCPAdapter
+            self.agentic_adapter = LegacyMCPAdapter(
+                llm_provider=self.llm_provider,
+                tool_registry=self.tool_registry,
+                tool_executor=self.tool_executor,
+                prompt_manager=self.prompt_manager
+            )
+            await self.agentic_adapter.initialize()
         
     async def initialize(self):
         """MCP 시스템 초기화"""
         logger.info("MCP 시스템 초기화 중...")
 
-        # LLM Provider 초기화 (실패 시 예외)
+        # 에이전틱 어댑터 초기화 (기존 초기화 로직 포함)
+        await self._ensure_agentic_adapter()
+        
+        # 기존 호환성을 위해 기본 초기화도 수행
         ok = await self.llm_provider.initialize()
         if not ok or not self.llm_provider.is_available():
             raise RuntimeError(
@@ -96,11 +133,26 @@ class MCPIntegration:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        """하위 호환용: 상세 실행 결과에서 텍스트만 반환"""
-        detailed = await self.process_user_request_detailed(
-            user_input, user_id=user_id, conversation_history=conversation_history
-        )
-        return detailed.get("text", "")
+        """
+        사용자 요청 처리 (기존 인터페이스 유지, 에이전틱 AI 업그레이드)
+        
+        기존 인터페이스를 완전히 유지하면서 내부적으로는 새로운 에이전틱 AI를 사용합니다.
+        """
+        if self.agentic_enabled:
+            # 새로운 에이전틱 AI 시스템 사용
+            await self._ensure_agentic_adapter()
+            assert self.agentic_adapter is not None  # 타입 체커를 위한 assertion
+            return await self.agentic_adapter.process_user_request(
+                user_input=user_input,
+                user_id=user_id,
+                conversation_history=conversation_history
+            )
+        else:
+            # 기존 방식 (레거시 모드)
+            detailed = await self._process_user_request_legacy(
+                user_input, user_id=user_id, conversation_history=conversation_history
+            )
+            return detailed.get("text", "")
 
     async def process_user_request_detailed(
         self,
@@ -108,7 +160,33 @@ class MCPIntegration:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """사용자 요청을 처리하여 텍스트와 실행 메타데이터를 함께 반환"""
+        """
+        사용자 요청 처리 (상세 결과 반환, 에이전틱 AI 업그레이드)
+        
+        기존 인터페이스를 완전히 유지하면서 내부적으로는 새로운 에이전틱 AI를 사용합니다.
+        """
+        if self.agentic_enabled:
+            # 새로운 에이전틱 AI 시스템 사용
+            await self._ensure_agentic_adapter()
+            assert self.agentic_adapter is not None  # 타입 체커를 위한 assertion
+            return await self.agentic_adapter.process_user_request_detailed(
+                user_input=user_input,
+                user_id=user_id,
+                conversation_history=conversation_history
+            )
+        else:
+            # 기존 방식 (레거시 모드)
+            return await self._process_user_request_legacy(
+                user_input, user_id=user_id, conversation_history=conversation_history
+            )
+    
+    async def _process_user_request_legacy(
+        self,
+        user_input: str,
+        user_id: str = "default",
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """기존 처리 방식 (레거시 모드용)"""
         try:
             logger.info(f"사용자 요청 처리 시작: {user_input}")
 
@@ -161,58 +239,16 @@ class MCPIntegration:
 
             plan_result = await self._execute_plan(decision, user_input)
             return plan_result
-
-            # 3-b) 실패 시 self-repair 루프 (에이전틱 재시도)
-            attempts = int(os.getenv("PAI_SELF_REPAIR_ATTEMPTS", "2"))
-            retry_count = 0
-            while (not execution_result.result.is_success) and retry_count < attempts:
-                retry_count += 1
-                try:
-                    repaired = await self._self_repair_parameters(tool_name, parameters, execution_result.result.error_message)
-                    if repaired and isinstance(repaired, dict):
-                        repaired = self._normalize_parameters(tool_name, repaired)
-                        execution_result = await self.tool_executor.execute_tool(tool_name=tool_name, parameters=repaired)
-                        if execution_result.result.is_success:
-                            parameters = repaired
-                            break
-                        else:
-                            parameters = repaired  # 다음 루프에 전달
-                    else:
-                        break
-                except Exception:
-                    break
-
-            # 4) 요약 + 메타
-            if execution_result.result.is_success:
-                logger.info(f"도구 실행 성공: {tool_name}")
-                text = self._summarize_success(tool_name, parameters, execution_result.result.data)
-                return {
-                    "text": text,
-                    "execution": {
-                        "tool_name": tool_name,
-                        "action": action,
-                        "status": "success",
-                        "parameters": parameters,
-                        "result_data": execution_result.result.data,
-                    }
-                }
-            else:
-                logger.error(f"도구 실행 실패: {execution_result.result.error_message}")
-                text = self._summarize_failure(tool_name, parameters, execution_result.result.error_message)
-                return {
-                    "text": text,
-                    "execution": {
-                        "tool_name": tool_name,
-                        "action": action,
-                        "status": "error",
-                        "error": execution_result.result.error_message,
-                        "parameters": parameters,
-                        "result_data": execution_result.result.data if execution_result.result else None,
-                    },
-                }
+            
         except Exception as e:
-            logger.error(f"요청 처리 중 오류: {e}")
-            return {"text": f"❌ 시스템 오류: {str(e)}", "execution": {"status": "error", "error": str(e)}}
+            logger.error(f"레거시 요청 처리 실패: {e}")
+            return {
+                "text": f"요청 처리 중 오류가 발생했습니다: {str(e)}",
+                "execution": {
+                    "status": "error",
+                    "error": str(e)
+                }
+            }
 
     async def _maybe_refine_response(self, user_input: str, draft: str, result_data: Optional[Dict[str, Any]] = None) -> str:
         """환경변수로 제어되는 최종 응답 LLM 리파인 단계 (JSON 강제 없음)."""

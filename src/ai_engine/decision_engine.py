@@ -436,7 +436,7 @@ class AgenticDecisionEngine:
             response = await self.llm_provider.generate_response(
                 messages=messages,
                 temperature=0.1,  # 정확성을 위해 낮은 온도
-                max_tokens=1000,
+                max_tokens=32768,
                 response_mime_type='application/json'
             )
             
