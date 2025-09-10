@@ -446,9 +446,9 @@ class AgenticController:
             messages = [ChatMessage(role="user", content=analysis_prompt)]
             
             response = await self.llm_provider.generate_response(
-                messages, 
+                messages,
                 temperature=0.2,  # 빠른 판단을 위해 온도 감소
-                max_tokens=512    # 복잡도 분석 토큰 대폭 축소
+                max_tokens=4096   # 요청에 따라 4096으로 상향
             )
             
             if response and response.content:

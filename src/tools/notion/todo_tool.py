@@ -655,6 +655,28 @@ class TodoTool(BaseTool):
                 priority_korean = priority_map.get(params["priority"].lower(), params["priority"])
                 properties["우선순위"] = create_notion_property("select", priority_korean)
             
+            # 상태 업데이트
+            if "status" in params:
+                try:
+                    raw = str(params["status"]).strip().lower()
+                    status_map = {
+                        "진행중": "진행 중",
+                        "진행 중": "진행 중",
+                        "in progress": "진행 중",
+                        "progress": "진행 중",
+                        "완료": "완료",
+                        "complete": "완료",
+                        "completed": "완료",
+                        "done": "완료",
+                        "not started": "Not Started",
+                        "미완료": "Not Started",
+                        "시작 전": "Not Started",
+                    }
+                    status_name = status_map.get(raw, params["status"])  # 미지정 값은 그대로 시도
+                    properties["작업상태"] = create_notion_property("status", status_name)
+                except Exception as _e:
+                    logger.warning(f"상태 업데이트 매핑 실패: {_e}")
+            
             # 마감일 업데이트
             if "due_date" in params:
                 if params["due_date"]:
@@ -682,7 +704,7 @@ class TodoTool(BaseTool):
             if not properties:
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
-                    error_message="업데이트할 내용이 없습니다. title, description, priority, due_date 중 하나 이상을 지정해주세요"
+                    error_message="업데이트할 내용이 없습니다. title, description, priority, due_date, status 중 하나 이상을 지정해주세요"
                 )
             
             # 페이지 업데이트

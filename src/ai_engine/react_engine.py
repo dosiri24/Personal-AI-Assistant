@@ -536,8 +536,39 @@ class ReactEngine:
             # JSON 파싱
             action_data = self._parse_action_response(response.content)
 
-            # LLM의 최종 결정이 'final_answer'면 그대로 사용
+            # LLM이 'final_answer'를 선택한 경우 1회 재시도(도구 강제)를 시도
             if action_data.get("action_type") == "final_answer":
+                strict_system_prompt = (
+                    system_prompt
+                    + "\n\n[중요 정책] 이 턴에서는 final_answer 사용이 금지됩니다.\n"
+                    + "반드시 tool_call을 출력하세요. 사용할 도구를 목록에서 선택하고, 필요한 파라미터를 메타데이터에 맞게 채우세요.\n"
+                    + "모호한 경우에도 합리적 기본값을 사용하세요. JSON 이외 형식은 허용되지 않습니다."
+                )
+                strict_messages = [
+                    ChatMessage(role="system", content=strict_system_prompt),
+                    ChatMessage(role="user", content=user_prompt),
+                ]
+                try:
+                    strict_response = await self.llm_provider.generate_response(
+                        messages=strict_messages,
+                        temperature=0.2,
+                        max_tokens=4096,
+                        response_mime_type='application/json'
+                    )
+                    strict_data = self._parse_action_response(strict_response.content)
+                    if strict_data.get("action_type") == "tool_call":
+                        tool_name = strict_data.get("tool_name")
+                        action = scratchpad.add_action(
+                            ActionType.TOOL_CALL,
+                            tool_name=tool_name,
+                            parameters=strict_data.get("parameters") or {}
+                        )
+                        logger.info(f"도구 호출 행동 결정(재시도): '{tool_name}'")
+                        return action
+                except Exception as re:
+                    logger.warning(f"행동 결정 재시도 실패: {re}")
+
+                # 재시도 후에도 여전히 final_answer면 그대로 존중
                 action = scratchpad.add_action(ActionType.FINAL_ANSWER)
                 action.parameters = {"answer": action_data.get("answer", "")}
                 logger.info("최종 답변 행동 결정됨")
@@ -547,7 +578,7 @@ class ReactEngine:
                 action = scratchpad.add_action(
                     ActionType.TOOL_CALL,
                     tool_name=tool_name,
-                    parameters=action_data.get("parameters", {})
+                    parameters=action_data.get("parameters") or {}
                 )
                 logger.info(f"도구 호출 행동 결정: '{tool_name}'")
             
@@ -872,7 +903,8 @@ class ReactEngine:
             "notion_calendar": ["일정", "캘린더", "회의", "미팅", "약속", "스케줄"],
             "apple_notes": ["메모", "노트", "Apple Notes", "애플메모"],
             "calculator": ["계산", "더하기", "빼기", "곱하기", "나누기", "+", "-", "*", "/"],
-            "filesystem": ["파일", "폴더", "이동", "복사", "삭제", "목록"]
+            "filesystem": ["파일", "폴더", "이동", "복사", "삭제", "목록"],
+            "system_time": ["시간", "현재", "지금", "날짜", "시각", "현재시간"]
         }
         alias_lines = [f"- {k}: {', '.join(v)}" for k, v in alias_map.items()]
 
@@ -898,6 +930,9 @@ class ReactEngine:
 3) 정보가 모호하면 합리적인 기본값 사용
 4) 반드시 JSON 형식만 출력
 
+도구별 필수 규칙:
+- notion_todo: update/delete/complete에는 반드시 'todo_id'가 필요합니다. ID가 없으면 먼저 list/get으로 후보를 조회하여 ID를 찾은 뒤 다음 스텝에서 update를 수행하세요.
+
 응답 스키마 (정확한 필드명 사용 필수):
 도구 사용 (우선):
 {{
@@ -910,6 +945,17 @@ class ReactEngine:
     "priority": "중간"
   }},
   "reasoning": "사용자가 todo 추가를 요청했으므로 notion_todo 도구 사용"
+}}
+
+시스템 시간 조회 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "system_time",
+  "parameters": {{
+    "action": "current",
+    "timezone": "Asia/Seoul"
+  }},
+  "reasoning": "현재 시간 정보가 필요하므로 system_time 도구 사용"
 }}
 
 최종 답변 (마지막 수단):
@@ -946,6 +992,10 @@ class ReactEngine:
                 content = content[start:end].strip()
             
             action_data = json.loads(content)
+            # parameters가 null이거나 비-딕셔너리인 경우 빈 객체로 보정
+            if isinstance(action_data, dict) and action_data.get("action_type") == "tool_call":
+                if not isinstance(action_data.get("parameters"), dict):
+                    action_data["parameters"] = {}
             
             # 매개변수 형식 정규화 (function_name -> tool_name, args -> parameters)
             if "function_name" in action_data and "tool_name" not in action_data:
