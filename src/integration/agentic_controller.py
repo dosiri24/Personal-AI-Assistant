@@ -193,7 +193,8 @@ class AgenticController:
                 goal=user_input,
                 available_tools=list(self.tool_registry.list_tools()),
                 max_iterations=max_iterations,
-                timeout_seconds=timeout_seconds
+                timeout_seconds=timeout_seconds,
+                constraints={"conversation_history": (conversation_history or [])[:10]}
             )
             
             logger.debug(f"AgentContext 생성 완료: 세션={context.session_id}, "
@@ -221,8 +222,16 @@ class AgenticController:
                 }
             else:
                 logger.warning(f"ReAct 엔진 부분 실패: {result.error_message}")
+                
+                # 타임아웃의 경우 더 나은 응답 제공
+                response_text = result.final_answer
+                if result.error_message == "TIMEOUT_EXCEEDED" and result.metadata.get("response"):
+                    response_text = result.metadata["response"]
+                elif not response_text or response_text.strip() == "":
+                    response_text = "요청을 처리하는 중 문제가 발생했어요. 다시 시도해주세요."
+                
                 return {
-                    "text": result.final_answer,
+                    "text": response_text,
                     "execution": {
                         "status": "partial_failure",
                         "method": "react",
@@ -281,6 +290,7 @@ class AgenticController:
                     "execution_time": result.metadata.get("execution_time", 0),
                     "plan_id": result.metadata.get("plan_id"),
                     "scratchpad_steps": len(result.scratchpad.steps) if result.scratchpad else 0,
+                    "tools_used": list(result.scratchpad.unique_tools_used) if result.scratchpad else [],
                     "error_message": result.error_message
                 },
                 "metadata": {

@@ -24,7 +24,8 @@ class TodoData(BaseModel):
     """할일 데이터"""
     title: str = Field(..., description="할일 제목")
     description: Optional[str] = Field(None, description="할일 설명")
-    due_date: Optional[datetime] = Field(None, description="마감일")
+    # 순수 LLM 원칙: LLM이 ISO 문자열을 생성하도록 하고, 여기서는 문자열/datetime 모두 허용
+    due_date: Optional[Union[str, datetime]] = Field(None, description="마감일(ISO 문자열 또는 datetime)")
     priority: Optional[str] = Field("중간", description="우선순위 (높음, 중간, 낮음)")
     category: Optional[str] = Field("Personal", description="카테고리")
     tags: Optional[List[str]] = Field(None, description="태그 목록")
@@ -185,7 +186,13 @@ class TodoTool(BaseTool):
         assert self.notion_client is not None, "Notion 클라이언트가 초기화되지 않았습니다"
     
     def _parse_datetime(self, date_str: str) -> datetime:
-        """자연어나 ISO 형식의 날짜/시간을 파싱"""
+        """자연어나 ISO 형식의 날짜/시간을 파싱
+
+        파싱 규칙(한국어 우선):
+        - "오늘"/"내일"만 있으면 23:59가 아니라 기본 18:00로 설정하지 않고, 그대로 EOD 유지
+        - "오늘 11시", "오전 11시", "오후 3시 30분", "11:20" 등 시간을 포함하면 해당 시각으로 설정(분 미지정시 00분)
+        - 시간대 정보가 없으면 기본 시간대(Settings.default_timezone)
+        """
         if not date_str:
             # 기본 시간대 (KST 등) 현재 시각 반환
             tz = ZoneInfo(self.settings.default_timezone)
@@ -206,14 +213,58 @@ class TodoTool(BaseTool):
         # 자연어 파싱 (간단한 패턴들)
         now = datetime.now(ZoneInfo(self.settings.default_timezone))
         date_str_lower = date_str.lower().strip()
-        
+        import re
+
+        # 시간 추출: 오전/오후, 시/분, 콜론 표기 지원
+        ampm = None
+        hour = None
+        minute = 0
+
+        # "오전/오후 HH시[MM분]" 패턴
+        m = re.search(r'(오전|오후)\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?', date_str_lower)
+        if m:
+            ampm = m.group(1)
+            hour = int(m.group(2))
+            if m.group(3):
+                minute = int(m.group(3))
+        # "HH:MM" 또는 "HH시[MM분]" 패턴
+        if hour is None:
+            m2 = re.search(r'(\d{1,2}):(\d{2})', date_str_lower)
+            if m2:
+                hour = int(m2.group(1))
+                minute = int(m2.group(2))
+        if hour is None:
+            m3 = re.search(r'(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?', date_str_lower)
+            if m3:
+                hour = int(m3.group(1))
+                if m3.group(2):
+                    minute = int(m3.group(2))
+
+        # 날짜 기준: 오늘/내일/다음 주
+        base = now
+        if '내일' in date_str_lower or 'tomorrow' in date_str_lower:
+            base = now + timedelta(days=1)
+        elif '다음 주' in date_str_lower or 'next week' in date_str_lower:
+            base = now + timedelta(weeks=1)
+        # '오늘'은 기본(now) 유지
+
+        if hour is not None:
+            # 오전/오후 보정
+            if ampm == '오후' and hour != 12:
+                hour += 12
+            if ampm == '오전' and hour == 12:
+                hour = 0
+            return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        # 시간 지정이 전혀 없으면 EOD로 설정 (기존 동작 유지)
         if date_str_lower in ['오늘', 'today']:
             return now.replace(hour=23, minute=59, second=0, microsecond=0)
-        elif date_str_lower in ['내일', 'tomorrow']:
+        if date_str_lower in ['내일', 'tomorrow']:
             return (now + timedelta(days=1)).replace(hour=23, minute=59, second=0, microsecond=0)
-        elif date_str_lower in ['다음 주', 'next week']:
+        if date_str_lower in ['다음 주', 'next week']:
             return (now + timedelta(weeks=1)).replace(hour=23, minute=59, second=0, microsecond=0)
-        
+
+        # 기타는 보수적으로 EOD
         return now.replace(hour=23, minute=59, second=0, microsecond=0)
     
     def _create_todo_properties(self, todo: TodoData) -> Dict[str, Any]:
@@ -245,10 +296,8 @@ class TodoTool(BaseTool):
                     error_message="제목이 필요합니다"
                 )
             
-            # 마감일 파싱
-            due_date = None
-            if params.get("due_date"):
-                due_date = self._parse_datetime(params["due_date"])
+            # 순수 LLM 원칙: due_date는 ISO 문자열 또는 datetime으로 바로 사용
+            due_date = params.get("due_date") if params.get("due_date") else None
             
             # 할일 데이터 생성
             todo = TodoData(
@@ -289,12 +338,20 @@ class TodoTool(BaseTool):
             
             logger.info(f"할일 생성 완료: {title} ({page_id})")
             
+            # due_date 안전한 처리
+            due_date_str = None
+            if due_date:
+                if hasattr(due_date, 'isoformat'):
+                    due_date_str = due_date.isoformat()
+                else:
+                    due_date_str = str(due_date)
+            
             return ToolResult(
                 status=ExecutionStatus.SUCCESS,
                 data={
                     "todo_id": page_id,
                     "title": title,
-                    "due_date": due_date.isoformat() if due_date else None,
+                    "due_date": due_date_str,
                     "priority": todo.priority,
                     "status": todo.status,
                     "url": page_url,
@@ -679,26 +736,10 @@ class TodoTool(BaseTool):
             
             # 마감일 업데이트
             if "due_date" in params:
+                # LLM이 제공한 값을 그대로 사용(ISO 문자열/ datetime 모두 지원)
                 if params["due_date"]:
-                    # 날짜 문자열 파싱
-                    try:
-                        if isinstance(params["due_date"], str):
-                            # ISO 형식 시도
-                            try:
-                                due_date = datetime.fromisoformat(params["due_date"].replace('Z', '+00:00'))
-                            except:
-                                # 다른 형식들 시도
-                                from dateutil import parser
-                                due_date = parser.parse(params["due_date"])
-                        else:
-                            due_date = params["due_date"]
-                        
-                        properties["마감일"] = create_notion_property("date", due_date.isoformat())
-                    except Exception as e:
-                        logger.warning(f"날짜 파싱 실패: {e}, 원본값 사용")
-                        properties["마감일"] = create_notion_property("date", str(params["due_date"]))
+                    properties["마감일"] = create_notion_property("date", params["due_date"])
                 else:
-                    # 마감일 제거
                     properties["마감일"] = create_notion_property("date", None)
             
             if not properties:

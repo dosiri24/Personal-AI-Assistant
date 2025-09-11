@@ -207,10 +207,25 @@ class ReactEngine:
         
         try:
             if step.action_type == "tool_call" and step.tool_name:
+                # 매개변수 검증 및 보정
+                validated_params = self._validate_and_fix_tool_params(step.tool_name, step.tool_params or {})
+                
+                if validated_params is None:
+                    step.status = PlanTaskStatus.FAILED
+                    error_msg = f"매개변수 검증 실패: {step.tool_name} 도구의 필수 매개변수가 누락되었습니다"
+                    step.error = error_msg
+                    logger.error(f"계획 단계 실행 실패: {error_msg}")
+                    
+                    return {
+                        "status": "failed",
+                        "error": error_msg,
+                        "expected_duration": step.estimated_duration
+                    }
+                
                 # 도구 실행
                 result = await self.tool_executor.execute_tool(
                     step.tool_name, 
-                    step.tool_params or {}
+                    validated_params
                 )
                 
                 if result.result.is_success:
@@ -221,7 +236,7 @@ class ReactEngine:
                     action_record = ActionRecord(
                         action_type=ActionType.TOOL_CALL,
                         tool_name=step.tool_name,
-                        parameters=step.tool_params or {}
+                        parameters=validated_params
                     )
                     
                     observation_record = ObservationRecord(
@@ -342,11 +357,15 @@ class ReactEngine:
                 # 타임아웃 체크
                 if time.time() - start_time > context.timeout_seconds:
                     logger.warning(f"ReAct 실행 타임아웃: {context.timeout_seconds}초 초과")
-                    scratchpad.finalize("실행 시간이 초과되었습니다.", success=False)
+                    
+                    # 타임아웃 시 부분 성공 여부 확인 후 적절한 응답 생성
+                    timeout_response = await self._handle_timeout(scratchpad, context)
+                    scratchpad.finalize(timeout_response, success=False)
+                    
                     return AgentResult.failure_result(
                         "TIMEOUT_EXCEEDED",
                         scratchpad,
-                        {"timeout_seconds": context.timeout_seconds}
+                        {"timeout_seconds": context.timeout_seconds, "response": timeout_response}
                     )
                 
                 # 새 스텝 시작
@@ -463,7 +482,7 @@ class ReactEngine:
             response = await self.llm_provider.generate_response(
                 messages=messages,
                 temperature=0.4,  # 빠른 결정을 위해 온도 감소
-                max_tokens=4096  # 사고 과정 토큰 수 적절히 증가 (2048->4096)
+                max_tokens=1024  # 사고 과정 토큰 수 대폭 감소 (4096->1024)
             )
             
             thought_content = response.content.strip()
@@ -699,6 +718,54 @@ class ReactEngine:
         
         return observation
     
+    async def _handle_timeout(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
+        """타임아웃 시 적절한 응답 생성"""
+        try:
+            # 성공한 액션이 있는지 확인
+            successful_actions = []
+            for step in scratchpad.steps:
+                if step.observation and step.observation.success and step.action:
+                    if step.action.tool_name == 'notion_todo':
+                        successful_actions.append("할일 생성/수정")
+                    elif step.action.tool_name == 'apple_calendar':
+                        successful_actions.append("일정 등록")
+                    elif step.action.tool_name:
+                        successful_actions.append(f"{step.action.tool_name} 실행")
+            
+            if successful_actions:
+                actions_text = ", ".join(set(successful_actions))
+                return f"시간이 초과되었지만 {actions_text}은 완료했어요! 😊"
+            else:
+                return "시간이 초과되어 작업을 완료하지 못했어요. 다시 시도해주세요."
+                
+        except Exception as e:
+            logger.error(f"타임아웃 응답 생성 실패: {e}")
+            return "시간이 초과되었어요. 다시 시도해주세요."
+    
+    def _detect_repetitive_actions(self, scratchpad: AgentScratchpad) -> bool:
+        """반복 행동 감지"""
+        if len(scratchpad.steps) < 3:
+            return False
+            
+        # 최근 3개 단계의 액션 확인
+        recent_actions = []
+        for step in scratchpad.steps[-3:]:
+            if step.action and step.action.tool_name:
+                recent_actions.append(step.action.tool_name)
+        
+        # 같은 도구를 연속으로 3번 이상 사용했는지 확인
+        if len(set(recent_actions)) == 1 and len(recent_actions) >= 3:
+            # notion_todo 같은 도구를 계속 반복하는 경우
+            if recent_actions[0] in ['notion_todo', 'apple_calendar']:
+                # 성공적인 실행이 있었는지 확인
+                for step in scratchpad.steps[-3:]:
+                    if (step.observation and step.observation.success and 
+                        step.action and step.action.tool_name == recent_actions[0]):
+                        logger.warning(f"반복 행동 감지: {recent_actions[0]} 도구를 3회 연속 사용, 성공한 실행 있음")
+                        return True
+        
+        return False
+    
     async def _is_goal_achieved(self, scratchpad: AgentScratchpad, context: AgentContext) -> bool:
         """목표 달성 여부를 판단 (휴리스틱 + LLM)"""
         logger.debug(f"목표 달성 여부 확인: 현재단계={len(scratchpad.steps)}")
@@ -707,9 +774,14 @@ class ReactEngine:
         if self._quick_goal_check(scratchpad, context):
             logger.info("휴리스틱으로 목표 달성 확인됨")
             return True
-        
+            
+        # 2. 반복 행동 감지 및 조기 종료
+        if self._detect_repetitive_actions(scratchpad):
+            logger.warning("반복 행동 감지됨 - 목표 달성으로 간주")
+            return True
+
         try:
-            # 목표 달성 판단 프롬프트
+            # 목표 달성 판단 프롬프트 (typo 보정 포함)
             system_prompt = """당신은 에이전트의 목표 달성 여부를 판단하는 전문가입니다.
 
 주어진 목표와 지금까지의 실행 과정을 분석하여 목표가 달성되었는지 판단하세요.
@@ -718,6 +790,13 @@ class ReactEngine:
 1. 목표가 명확히 완료되었는가?
 2. 사용자가 요청한 모든 작업이 성공적으로 수행되었는가?
 3. 추가로 수행해야 할 중요한 단계가 남아있지 않은가?
+
+**중요**: 다음과 같은 typo나 오타는 관대하게 해석하세요:
+- "odo" → "todo" (할일)
+- "otino" → "notion"
+- "clanedar" → "calendar"
+
+사용자의 의도가 명확하고 해당 작업이 성공적으로 완료되었다면 달성으로 판단하세요.
 
 응답은 반드시 JSON 형식으로 하되, 다음 형태를 따르세요:
 {
@@ -857,27 +936,55 @@ class ReactEngine:
 
 현재 목표: {context.goal}
 
-사고 과정에서 고려해야 할 사항:
-1. 현재 상황과 지금까지의 진행상황 분석
-2. 목표 달성을 위해 다음에 수행해야 할 가장 중요한 단계 식별
-3. 가능한 접근 방법들과 각각의 장단점 평가
-4. 예상되는 결과와 잠재적 문제점 고려
-5. 이전 실패 경험이 있다면 그로부터 얻은 교훈 반영
+간결하고 핵심적인 사고 과정만 작성하세요:
+1. 현재 상황 요약 (1-2문장)
+2. 다음 필요한 행동 (1-2문장)
+3. 선택 이유 (1-2문장)
 
-깊이 있고 논리적인 사고 과정을 자연어로 설명하세요.
-구체적이고 실행 가능한 계획을 포함해야 합니다."""
+불필요한 상세 분석이나 긴 설명은 피하고, 처리에 필요한 핵심 내용만 포함하세요.
+형식을 갖출 필요 없이 실용적이고 간단명료하게 작성하세요."""
     
     def _create_thinking_user_prompt(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
         """사고 과정을 위한 사용자 프롬프트"""
+        # 최근 대화 컨텍스트(있으면) 주입
+        history_txt = ""
+        try:
+            conv = (context.constraints or {}).get("conversation_history") or []
+            if isinstance(conv, list) and conv:
+                # 최근 10개로 확장하고 더 자세히 표시
+                tail = conv[-10:]
+                lines = []
+                for item in tail:
+                    if isinstance(item, dict):
+                        role = item.get("role") or "context"
+                        content = (item.get("content") or "").strip()
+                        if content:
+                            # TODO 관련 내용은 특별히 강조
+                            if any(keyword in content.lower() for keyword in ['todo', '할일', '투두', '작업', '기행문', 'notion']):
+                                lines.append(f"- {role}: 📝 {content}")
+                            else:
+                                lines.append(f"- {role}: {content}")
+                if lines:
+                    history_txt = "최근 대화 컨텍스트 (참고용):\n" + "\n".join(lines) + "\n\n"
+        except Exception:
+            pass
+
         if not scratchpad.steps:
-            return f"목표 '{context.goal}'를 달성하기 위한 첫 번째 단계를 계획해주세요. 현재 상황을 분석하고 어떤 접근 방식이 가장 효과적일지 생각해보세요."
+            return (
+                history_txt
+                + f"목표 '{context.goal}'를 달성하기 위한 첫 번째 단계를 간단히 계획하세요. (3-4문장 이내)\n"
+                + "이전 대화에서 언급된 관련 정보가 있다면 참고하세요."
+            )
         
-        return f"""현재까지의 진행 상황:
+        return (
+            history_txt
+            + f"""현재까지의 진행 상황:
 {scratchpad.get_latest_context()}
 
-위 상황을 바탕으로 다음 단계를 계획해주세요. 
-이전 단계의 결과를 어떻게 활용할 것인지, 아직 해결되지 않은 문제는 무엇인지 분석하고,
-목표 달성을 위한 최적의 다음 행동을 결정하세요."""
+위 상황을 바탕으로 다음 단계를 간단히 계획하세요. (3-4문장 이내)
+이전 결과를 어떻게 활용할지, 다음에 무엇을 할지만 핵심적으로 작성하세요.
+이전 대화 맥락도 고려하세요."""
+        )
     
     def _create_action_system_prompt(self, context: AgentContext, tools_info: List[Dict]) -> str:
         """행동 결정을 위한 시스템 프롬프트(도구 메타데이터/별칭/예시 포함)"""
@@ -889,49 +996,114 @@ class ReactEngine:
                 if p.get("name") == "action" and p.get("choices"):
                     actions = p["choices"]
                     break
-            params_str = ", ".join([
-                f"{p.get('name')}" + ("*" if p.get("required") else "") + (f"(choices: {', '.join(p.get('choices', []))})" if p.get('choices') else "")
-                for p in t.get("parameters", [])
-            ])
-            tool_lines.append(f"- {t['name']}: {t['description']} | params: {params_str}" + (f" | actions: {', '.join(actions)}" if actions else ""))
+            
+            # 파라미터 정보를 더 명확하게 표시
+            param_details = []
+            for p in t.get("parameters", []):
+                param_name = p.get('name', '')
+                required_mark = "*" if p.get("required") else ""
+                choices = p.get('choices', [])
+                
+                if choices:
+                    # choices가 있는 경우 더 명확하게 표시
+                    choices_str = f" [선택값: {' | '.join(choices)}]"
+                else:
+                    choices_str = ""
+                
+                param_details.append(f"{param_name}{required_mark}{choices_str}")
+            
+            params_str = ", ".join(param_details)
+            tool_lines.append(f"- {t['name']}: {t['description']} | 파라미터: {params_str}")
 
         tools_desc = "\n".join(tool_lines)
 
-        # 한국어 별칭 매핑(도구 선택 가이드)
-        alias_map = {
-            "notion_todo": ["할일", "todo", "태스크", "작업", "체크리스트"],
-            "notion_calendar": ["일정", "캘린더", "회의", "미팅", "약속", "스케줄"],
-            "apple_notes": ["메모", "노트", "Apple Notes", "애플메모"],
-            "calculator": ["계산", "더하기", "빼기", "곱하기", "나누기", "+", "-", "*", "/"],
-            "filesystem": ["파일", "폴더", "이동", "복사", "삭제", "목록"],
-            "system_time": ["시간", "현재", "지금", "날짜", "시각", "현재시간"]
-        }
-        alias_lines = [f"- {k}: {', '.join(v)}" for k, v in alias_map.items()]
+        # 실제 사용자 경로 정보 추가
+        import os
+        from pathlib import Path
+        home_path = str(Path.home())
+        desktop_path = str(Path.home() / "Desktop")
+        documents_path = str(Path.home() / "Documents")
+        downloads_path = str(Path.home() / "Downloads")
 
         return f"""당신은 사용 가능한 MCP 도구들을 활용해 사용자의 목표를 실행하는 에이전트입니다.
 
 목표: {context.goal}
 
+🔍 실제 시스템 경로 정보:
+- 홈 디렉토리: {home_path}
+- 바탕화면: {desktop_path}
+- 문서 폴더: {documents_path}
+- 다운로드 폴더: {downloads_path}
+
 사용 가능한 도구(메타데이터):
 {tools_desc}
-
-도구 선택 별칭(한국어 표현 → 도구명):
-{chr(10).join(alias_lines)}
 
 🚨 CRITICAL: 도구 사용 우선 규칙 🚨
 1) TODO 추가, 일정 추가, 계산, 파일 작업 등은 무조건 해당 도구를 사용해야 합니다
 2) 절대로 "사용자가 직접 하세요"라고 답하지 마세요 - 당신이 도구로 해결하세요
 3) 현재 날짜/시간이 필요하면 먼저 'system_time' 도구를 반드시 사용하세요
 4) final_answer는 정말 도구로 해결할 수 없는 경우에만 사용하세요
+5) 🔍 이전 대화에서 언급된 할일/작업들을 먼저 검색해서 찾아보세요 (키워드 포함 검색 활용)
+
+🔍 파일 작업 필수 원칙:
+⚠️ 파일/폴더 작업을 수행하기 전에 반드시 다음을 확인하세요:
+1. 파일 작업 전 항상 filesystem 도구로 대상 경로의 실제 상태를 list로 먼저 확인
+2. 파일과 폴더를 구분하여 확인 (파일을 폴더로 착각하지 마세요!)
+3. 존재하지 않는 파일/폴더를 가정하지 마세요
+4. 실제 확인 결과를 바탕으로 작업을 수행하세요
+
+💡 대화 맥락 활용 가이드:
+- 사용자가 특정 키워드를 이야기 하면 그 단어와 관련 모든 항목을 검색하세요
+- 제목이 정확히 일치하지 않아도 그 안의 주요 키워드로 검색하세요
+- list action으로 먼저 관련 항목들을 확인한 후 적절한 것을 선택하세요
 
 행동 결정 규칙:
 1) 파라미터는 메타데이터에 맞게 정확히 채웁니다
-2) 날짜/시간은 ISO 형식(예: 2025-09-10T20:00:00+09:00)으로 변환
-3) 정보가 모호하면 합리적인 기본값 사용
-4) 반드시 JSON 형식만 출력
+2) [선택값: A | B | C] 형태로 표시된 파라미터는 반드시 그 중 하나를 정확히 선택하세요
+3) 날짜/시간은 ISO 형식(예: 2025-09-10T20:00:00+09:00)으로 변환
+4) 정보가 모호하면 합리적인 기본값 사용
+5) 반드시 JSON 형식만 출력
+
+⚠️ 중요: 파라미터 구분을 정확히 하세요!
+- 작업명/제목 변경: title 파라미터 사용
+- 진행상황 변경: status 파라미터 사용 ("Not Started", "In Progress", "Completed", "Cancelled")
+- 우선순위 변경: priority 파라미터 사용 ("높음", "중간", "낮음")
+- 마감일 변경: due_date 파라미터 사용
+
+예시 구분:
+- "GPS개론 완료로 바꿔줘" → status를 "Completed"로 설정 (진행상황 완료)
+- "제목을 GPS개론 완료로 바꿔줘" → title을 "GPS개론 완료"로 설정 (작업명 변경)
+- "우선순위를 높음으로 바꿔줘" → priority를 "높음"으로 설정
+
+⚠️ 중요: 선택값이 정해진 파라미터는 반드시 정확한 값을 사용하세요. 예를 들어:
+- notion_todo의 action: 반드시 "create", "update", "delete", "get", "list", "complete" 중 하나
+- priority: 반드시 "높음", "중간", "낮음" 중 하나
+- status: 반드시 "Not Started", "In Progress", "Completed", "Cancelled" 중 하나
 
 도구별 필수 규칙:
-- notion_todo: update/delete/complete에는 반드시 'todo_id'가 필요합니다. ID가 없으면 먼저 list/get으로 후보를 조회하여 ID를 찾은 뒤 다음 스텝에서 update를 수행하세요.
+- notion_todo: 
+  * action 필수값: create(새 할일), update(수정), delete(삭제), get(단일 조회), list(목록 조회), complete(완료 처리)
+  * update/delete/complete/get에는 반드시 'todo_id'가 필요합니다. ID가 없으면 먼저 list로 후보를 조회하여 ID를 찾은 뒤 다음 스텝에서 해당 action을 수행하세요.
+  * ⭐ list에서 query 파라미터 활용: 제목에 포함된 키워드로 검색 가능 (예: query="기행문"으로 기행문 관련 모든 할일 검색)
+  * priority 선택값: "높음", "중간", "낮음"
+  * status 선택값: "Not Started", "In Progress", "Completed", "Cancelled"
+- notion_calendar:
+  * action 필수값: create(새 일정), update(수정), delete(삭제), get(단일 조회), list(목록 조회)
+- calculator:
+  * action 필수값: calculate(계산 수행)
+- filesystem:
+  * action 필수값: list(목록 조회), stat(파일 정보), move(이동), copy(복사), mkdir(디렉토리 생성), trash_delete(휴지통), delete(영구 삭제)
+  * ⚠️ 중요: 반드시 위의 실제 경로를 사용하세요! "/Users/your_username/" 같은 플레이스홀더 절대 금지!
+  * ⚠️ 매개변수명 주의: "src", "dst" 사용 (source, destination 아님!)
+  * mkdir 사용법: {{"action": "mkdir", "path": "{desktop_path}/새폴더", "parents": true}}
+  * move 사용법: {{"action": "move", "src": "{desktop_path}/원본파일", "dst": "{desktop_path}/새폴더/원본파일"}}
+  * copy 사용법: {{"action": "copy", "src": "{desktop_path}/원본", "dst": "{desktop_path}/복사본", "recursive": true}}
+  * list 사용법: {{"action": "list", "path": "{desktop_path}", "include_hidden": false}}
+  * 🔍 파일 작업 전 반드시 list로 실제 구조 확인!
+- apple_notes:
+  * action 필수값: create(새 메모), update(수정), search(검색), list(목록 조회)
+- system_time:
+  * 파라미터 없음 (현재 시간 반환)
 
 응답 스키마 (정확한 필드명 사용 필수):
 도구 사용 (우선):
@@ -947,15 +1119,84 @@ class ReactEngine:
   "reasoning": "사용자가 todo 추가를 요청했으므로 notion_todo 도구 사용"
 }}
 
+진행상황 변경 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "notion_todo",
+  "parameters": {{
+    "action": "update",
+    "todo_id": "existing_todo_id",
+    "status": "Completed"
+  }},
+  "reasoning": "사용자가 진행상황을 완료로 변경하라고 요청했으므로 status를 Completed로 설정"
+}}
+
+우선순위 변경 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "notion_todo",
+  "parameters": {{
+    "action": "update",
+    "todo_id": "existing_todo_id",
+    "priority": "높음"
+  }},
+  "reasoning": "사용자가 우선순위를 높음으로 변경하라고 요청했으므로 priority 설정"
+}}
+
+제목 변경 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "notion_todo",
+  "parameters": {{
+    "action": "update",
+    "todo_id": "existing_todo_id",
+    "title": "새로운 작업명"
+  }},
+  "reasoning": "사용자가 작업명/제목을 변경하라고 요청했으므로 title 설정"
+}}
+
+할일 검색 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "notion_todo",
+  "parameters": {{
+    "action": "list",
+    "query": "기행문",
+    "filter": "pending"
+  }},
+  "reasoning": "기행문 관련 할일을 찾기 위해 query로 키워드 검색 수행"
+}}
+
 시스템 시간 조회 예시:
 {{
   "action_type": "tool_call",
   "tool_name": "system_time",
-  "parameters": {{
-    "action": "current",
-    "timezone": "Asia/Seoul"
-  }},
+  "parameters": {{}},
   "reasoning": "현재 시간 정보가 필요하므로 system_time 도구 사용"
+}}
+
+디렉토리 생성 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "filesystem",
+  "parameters": {{
+    "action": "mkdir",
+    "path": "{desktop_path}/새폴더",
+    "parents": true
+  }},
+  "reasoning": "새 폴더를 생성하기 위해 filesystem 도구의 mkdir 액션 사용"
+}}
+
+파일 이동 예시:
+{{
+  "action_type": "tool_call",
+  "tool_name": "filesystem",
+  "parameters": {{
+    "action": "move",
+    "src": "{desktop_path}/원본파일.pdf",
+    "dst": "{desktop_path}/새폴더/원본파일.pdf"
+  }},
+  "reasoning": "파일을 새 위치로 이동하기 위해 filesystem 도구의 move 액션 사용"
 }}
 
 최종 답변 (마지막 수단):
@@ -965,7 +1206,19 @@ class ReactEngine:
   "reasoning": "도구 사용이 불필요하거나 목표 완료"
 }}
 
-⚠️ 중요: 반드시 "tool_name"과 "parameters"를 사용하세요. "function_name", "args" 등은 사용하지 마세요."""
+⚠️ 중요: 반드시 "tool_name"과 "parameters"를 사용하세요. "function_name", "args" 등은 사용하지 마세요.
+
+🚨 도구 이름 규칙:
+- 절대로 "filesystem.mkdir", "notion_todo.create" 같은 방식으로 쓰지 마세요
+- 올바른 형태: "tool_name": "filesystem", "parameters": {"action": "mkdir", ...}
+- 올바른 형태: "tool_name": "notion_todo", "parameters": {"action": "create", ...}
+
+🚨 경로 사용 규칙:
+- 반드시 위에 제공된 실제 경로를 사용하세요!
+- 절대로 "/Users/your_username/", "/Users/username/" 같은 플레이스홀더 사용 금지!
+- 올바른 예: "{desktop_path}/새폴더"
+- 잘못된 예: "/Users/your_username/Desktop/새폴더"
+"""
     
     def _create_action_user_prompt(self, thought: ThoughtRecord, scratchpad: AgentScratchpad) -> str:
         """행동 결정을 위한 사용자 프롬프트"""
@@ -1148,3 +1401,55 @@ class ReactEngine:
                 return True
                 
         return False
+    
+    def _validate_and_fix_tool_params(self, tool_name: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """도구 매개변수 검증 및 자동 보정"""
+        if not tool_name:
+            return None
+        
+        # 파라미터 복사본 생성
+        validated_params = params.copy()
+        
+        # 도구별 필수 매개변수 검증 및 보정
+        if tool_name == "filesystem":
+            if "action" not in validated_params:
+                logger.warning(f"filesystem 도구의 필수 매개변수 'action'이 누락됨. 기본값 'list' 적용")
+                validated_params["action"] = "list"
+            
+            # 잘못된 매개변수명 자동 변환
+            if "source" in validated_params:
+                validated_params["src"] = validated_params.pop("source")
+                logger.warning(f"filesystem 도구의 매개변수 'source'를 'src'로 변환")
+            if "destination" in validated_params:
+                validated_params["dst"] = validated_params.pop("destination")
+                logger.warning(f"filesystem 도구의 매개변수 'destination'을 'dst'로 변환")
+        
+        elif tool_name == "notion_todo":
+            if "action" not in validated_params:
+                logger.warning(f"notion_todo 도구의 필수 매개변수 'action'이 누락됨. 기본값 'list' 적용")
+                validated_params["action"] = "list"
+        
+        elif tool_name == "notion_calendar":
+            if "action" not in validated_params:
+                logger.warning(f"notion_calendar 도구의 필수 매개변수 'action'이 누락됨. 기본값 'list' 적용")
+                validated_params["action"] = "list"
+        
+        elif tool_name == "calculator":
+            if "action" not in validated_params:
+                logger.warning(f"calculator 도구의 필수 매개변수 'action'이 누락됨. 기본값 'calculate' 적용")
+                validated_params["action"] = "calculate"
+        
+        # 도구 메타데이터를 통한 추가 검증
+        tool_metadata = self.tool_registry.get_tool_metadata(tool_name)
+        if tool_metadata:
+            for param in tool_metadata.parameters:
+                if param.required and param.name not in validated_params:
+                    # 필수 매개변수가 누락된 경우 기본값 적용 시도
+                    if param.default is not None:
+                        validated_params[param.name] = param.default
+                        logger.warning(f"{tool_name} 도구의 필수 매개변수 '{param.name}'에 기본값 적용: {param.default}")
+                    else:
+                        logger.error(f"{tool_name} 도구의 필수 매개변수 '{param.name}'이 누락되었고 기본값이 없음")
+                        return None
+        
+        return validated_params
