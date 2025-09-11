@@ -13,9 +13,9 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.infrastructure.config.settings import get_settings
-from src.shared.logging import setup_logging, get_logger
-from src.infrastructure.container import setup_container
+from src.config import get_settings
+from src.utils.logger import setup_logging, get_logger
+# from src.infrastructure.container import setup_container  # TODO: 컨테이너 시스템 확인 필요
 # from src.mcp.mcp_integration import get_unified_mcp_system  # TODO: 함수명 확인 필요
 
 
@@ -25,27 +25,21 @@ async def initialize_system():
     settings = get_settings()
     
     # 로깅 설정
-    setup_logging(
-        log_level=settings.system.log_level.value,
-        logs_dir=settings.system.logs_dir,
-        enable_console=True,
-        enable_file=True,
-        enable_structured=True
-    )
+    setup_logging()
     
     logger = get_logger(__name__)
     logger.info("Personal AI Assistant 시작")
     logger.info(f"환경: {settings.environment}")
     logger.info(f"디버그 모드: {settings.debug}")
     
-    # 의존성 주입 컨테이너 설정
-    setup_container()
-    logger.info("의존성 주입 컨테이너 설정 완료")
+    # 의존성 주입 컨테이너 설정 (TODO: 구현 필요)
+    # setup_container()
+    logger.info("의존성 주입 컨테이너 설정 생략")
     
-    # 통합 MCP 시스템 초기화
-    # mcp_system = get_unified_mcp_system()  # TODO: MCP 시스템 초기화
+    # 통합 MCP 시스템 초기화 (TODO: 구현 필요)
+    # mcp_system = get_unified_mcp_system()
     # await mcp_system.initialize()
-    logger.info("MCP 시스템 초기화 완료")
+    logger.info("MCP 시스템 초기화 생략")
     
     return settings, logger
 

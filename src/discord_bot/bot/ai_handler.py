@@ -107,8 +107,8 @@ class AIMessageHandler:
             # AI 응답 생성
             response = await ai_handler.process_message(
                 user_message=content,
-                user_id=message.author.id,
-                channel_id=message.channel.id,
+                user_id=str(message.author.id),
+                channel_id=str(message.channel.id),
                 metadata={
                     "turn_id": turn_id,
                     "session_id": session.session_id,
@@ -120,8 +120,9 @@ class AIMessageHandler:
             
             self.logger.info(f"AI Handler 응답: {response}")
             
-            # 응답 전송
-            await self._send_ai_response(message, response, turn_id)
+            # 응답 전송 (AIResponse 객체에서 content 추출)
+            response_content = response.content if hasattr(response, 'content') else str(response)
+            await self._send_ai_response(message, response_content, turn_id)
             
         except Exception as e:
             self.logger.error(f"AI Handler 처리 중 오류: {e}")
@@ -140,9 +141,8 @@ class AIMessageHandler:
             
             # 응답을 세션에 기록
             await self.session_manager.update_conversation_turn(
-                user_id=message.author.id,
                 turn_id=turn_id,
-                ai_response=response
+                bot_response=response
             )
             
             self.logger.info(f"AI 응답 전송 완료: {message.author.id}")

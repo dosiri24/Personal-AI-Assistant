@@ -40,10 +40,11 @@ def _bootstrap_certs() -> None:
 
 
 async def _run() -> None:
-    from src.utils.logger import get_logger
     from src.config import Settings
+    from src.utils.logger import get_logger
     from src.discord_bot.bot import DiscordBot
-    from src.mcp.apple_mcp_manager import autostart_if_configured
+    from src.mcp.apple.apple_client import autostart_if_configured
+    from src.mcp.mcp_integration import get_unified_mcp_system
     import os
 
     logger = get_logger("root_launcher")
@@ -53,6 +54,15 @@ async def _run() -> None:
 
     # Apple MCP 서버 자동 시작 (옵션)
     mcp_manager = autostart_if_configured(settings)
+
+    # MCP 통합 시스템 초기화
+    try:
+        mcp_system = get_unified_mcp_system()
+        await mcp_system.initialize()
+        logger.info("MCP 통합 시스템 초기화 완료")
+    except Exception as e:
+        logger.error(f"MCP 시스템 초기화 실패: {e}")
+        logger.info("MCP 시스템 없이 계속 진행")
 
     if not settings.has_valid_discord_token():
         print("❌ Discord 토큰이 설정되지 않았습니다. .env의 DISCORD_BOT_TOKEN을 확인해주세요.")

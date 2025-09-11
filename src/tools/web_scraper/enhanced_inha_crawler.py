@@ -10,8 +10,9 @@ import asyncio
 import requests
 import time
 import json
-from bs4 import BeautifulSoup
-from typing import List, Dict, Any, Optional
+from bs4 import BeautifulSoup, Tag
+from bs4.element import NavigableString
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 import re
 
@@ -49,15 +50,18 @@ class EnhancedInhaNoticeCrawler:
                         # 기본 정보 추출
                         category = cells[0].get_text(strip=True)
                         title_cell = cells[1]
-                        title_link = title_cell.find('a')
+                        title_link = None
+                        if isinstance(title_cell, Tag):
+                            title_link = title_cell.find('a')
                         
-                        if title_link:
+                        if title_link and isinstance(title_link, Tag):
                             title = title_link.get_text(strip=True)
-                            detail_link = title_link.get('href', '')
+                            detail_link_attr = title_link.get('href', '')
+                            detail_link = str(detail_link_attr) if detail_link_attr else ""
                             if detail_link and not detail_link.startswith('http'):
                                 detail_link = f"{self.detail_base_url}{detail_link}"
                         else:
-                            title = title_cell.get_text(strip=True)
+                            title = title_cell.get_text(strip=True) if isinstance(title_cell, Tag) else str(title_cell)
                             detail_link = ""
                         
                         author = cells[2].get_text(strip=True)
@@ -225,19 +229,21 @@ class EnhancedInhaNoticeCrawler:
         
         for selector in attachment_selectors:
             for link in soup.select(selector):
-                filename = link.get_text(strip=True)
-                file_url = link.get('href', '')
-                
-                # 파일 확장자 확인
-                if any(ext in filename.lower() for ext in ['.pdf', '.doc', '.hwp', '.xlsx', '.zip']):
-                    if file_url and not file_url.startswith('http'):
-                        file_url = f"{self.detail_base_url}{file_url}"
+                if isinstance(link, Tag):
+                    filename = link.get_text(strip=True)
+                    file_url_attr = link.get('href', '')
+                    file_url = str(file_url_attr) if file_url_attr else ""
                     
-                    attachments.append({
-                        'name': filename,
-                        'url': file_url,
-                        'type': self._get_file_type(filename)
-                    })
+                    # 파일 확장자 확인
+                    if any(ext in filename.lower() for ext in ['.pdf', '.doc', '.hwp', '.xlsx', '.zip']):
+                        if file_url and not file_url.startswith('http'):
+                            file_url = f"{self.detail_base_url}{file_url}"
+                        
+                        attachments.append({
+                            'name': filename,
+                            'url': file_url,
+                            'type': self._get_file_type(filename)
+                        })
         
         # 중복 제거
         seen = set()

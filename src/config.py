@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     proactive_window_minutes: int = Field(default=360, description="선톡 대상으로 고려할 마감까지의 시간 창 (분)")
     proactive_channel_id: Optional[int] = Field(default=None, description="선톡 기본 채널 ID (없으면 관리자 DM)")
     
+    @property
+    def discord_token(self) -> str:
+        """Discord 토큰 (호환성)"""
+        return self.discord_bot_token
     
     def has_valid_api_key(self) -> bool:
         """유효한 API 키가 있는지 확인"""

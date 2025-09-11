@@ -13,12 +13,47 @@ from .logger import (
     PersonalAILogger
 )
 
+from .error_handler import (
+    SimpleErrorHandler,
+    AISystemError,
+    AINetworkError,
+    AIValidationError,
+    retry_on_failure
+)
+
+from .performance import (
+    SimpleCache,
+    SimplePerformanceMonitor,
+    PerformanceMetrics,
+    global_performance_monitor,
+    global_cache,
+    monitor_performance
+)
+
+from .log_manager import LogManager
+
 __all__ = [
+    # Logger
     "setup_logging",
     "get_logger", 
     "get_discord_logger",
     "get_ai_logger",
     "get_mcp_logger",
     "get_memory_logger",
-    "PersonalAILogger"
+    "PersonalAILogger",
+    # Error Handler
+    "SimpleErrorHandler",
+    "AISystemError",
+    "AINetworkError", 
+    "AIValidationError",
+    "retry_on_failure",
+    # Performance
+    "SimpleCache",
+    "SimplePerformanceMonitor",
+    "PerformanceMetrics",
+    "global_performance_monitor",
+    "global_cache",
+    "monitor_performance",
+    # Log Manager
+    "LogManager"
 ]

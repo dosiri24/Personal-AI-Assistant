@@ -90,8 +90,8 @@ class MCPIntegration:
                 "LLM Provider(Gemini) 초기화 실패. 환경변수 'GOOGLE_API_KEY'를 설정했는지 확인하세요."
             )
         
-        # 도구 자동 발견 및 등록
-        await self._discover_and_register_tools()
+        # 도구는 이미 에이전틱 어댑터에서 등록됨 - 중복 등록 방지
+        # await self._discover_and_register_tools()
         
         logger.info(f"MCP 시스템 초기화 완료. 등록된 도구 수: {len(self.tool_registry.list_tools())}")
     
@@ -108,8 +108,8 @@ class MCPIntegration:
 
         # 2) 시스템 시간 도구 수동 등록
         try:
-            from ..tools.system_time_tool import create_system_time_tool
-            system_time_tool = create_system_time_tool()
+            from ..tools.core.system_time import SystemTimeTool
+            system_time_tool = SystemTimeTool()
             await system_time_tool.initialize()
             ok = await self.tool_registry.register_tool_instance(system_time_tool)
             if ok:
@@ -121,8 +121,8 @@ class MCPIntegration:
 
         # 3) Apple MCP 도구 수동 등록 (생성자 주입 필요)
         try:
-            from .apple_tools import register_apple_tools
-            from .apple_client import AppleAppsManager
+            from .apple.apple_tools import register_apple_tools
+            from .apple.apple_client import AppleAppsManager
 
             apple_manager = AppleAppsManager()
             apple_tools = register_apple_tools(apple_manager)
@@ -750,6 +750,9 @@ class MCPIntegration:
             if not src_path:
                 return {"text": "❌ 원본 파일 선택 실패: 후보가 비어있거나 선택되지 않았습니다.", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": "source_not_selected"}}
 
+            if not dst_folder:
+                return {"text": "❌ 대상 폴더가 지정되지 않았습니다.", "execution": {"tool_name": "filesystem", "action": "move", "status": "error", "error": "destination_not_specified"}}
+
             base_name = Path(src_path).name
             sanitized_folder = sanitize_desktop_path(Path(dst_folder))
             if str(sanitized_folder) != str(Path(dst_folder)):
@@ -761,7 +764,7 @@ class MCPIntegration:
                 stem = Path(base_name).stem
                 ext = Path(base_name).suffix
                 ts = time.strftime("%Y%m%d-%H%M%S")
-                dst_path = str(Path(dst_folder) / f"{stem}-{ts}{ext}")
+                dst_path = str(sanitized_folder / f"{stem}-{ts}{ext}")
 
             # 4) 드라이런 → 실제 이동
             logger.info(f"Agentic(FS): dry_run move — src={src_path}, dst={dst_path}")
@@ -1423,7 +1426,9 @@ class MCPIntegration:
                             return None
                         # LLM이 액션을 바꿀 수 있으나, 현재는 같은 액션만 허용(원하면 반영 가능)
                         params["todo_id"] = next_step["todo_id"]
-                        logger.info(f"Self-repair(notion_todo): LLM 스텝 — action={next_step.get('action')}, id={next_step.get('todo_id')[:8]}…")
+                        todo_id = next_step.get('todo_id', '')
+                        todo_id_short = todo_id[:8] if todo_id else 'unknown'
+                        logger.info(f"Self-repair(notion_todo): LLM 스텝 — action={next_step.get('action')}, id={todo_id_short}…")
                         return params
                     except Exception:
                         return None
@@ -1502,6 +1507,30 @@ async def run_integration_test():
         print(f"AI 비서: {response}")
     
     print("\n✅ MCP 통합 시스템 테스트 완료")
+
+
+# 전역 MCP 시스템 인스턴스
+_mcp_system: Optional[MCPIntegration] = None
+
+def get_unified_mcp_system() -> MCPIntegration:
+    """통합 MCP 시스템 인스턴스를 반환합니다."""
+    global _mcp_system
+    if _mcp_system is None:
+        _mcp_system = MCPIntegration()
+        
+        # Apple MCP 서버 자동 시작 (설정에 따라)
+        try:
+            from .apple.apple_client import autostart_if_configured
+            settings = get_settings()
+            apple_manager = autostart_if_configured(settings)
+            if apple_manager:
+                logger.info("Apple MCP 서버 자동 시작 완료")
+            else:
+                logger.debug("Apple MCP 서버 자동 시작 비활성화 (APPLE_MCP_AUTOSTART=false)")
+        except Exception as e:
+            logger.warning(f"Apple MCP 서버 자동 시작 실패: {e}")
+    
+    return _mcp_system
 
 
 if __name__ == "__main__":

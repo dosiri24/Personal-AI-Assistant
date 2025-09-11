@@ -96,24 +96,25 @@ def create_bot_config_from_settings(settings) -> BotConfig:
     authorized_users = set()
     admin_users = set()
     
-    if hasattr(settings, 'discord_authorized_users') and settings.discord_authorized_users:
+    # 올바른 설정 필드 사용
+    if hasattr(settings, 'allowed_user_ids') and settings.allowed_user_ids:
         try:
             # 쉼표로 구분된 문자열을 파싱
-            user_ids = settings.discord_authorized_users.split(',')
+            user_ids = settings.allowed_user_ids.split(',')
             authorized_users = {int(uid.strip()) for uid in user_ids if uid.strip().isdigit()}
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError) as e:
             pass
     
-    if hasattr(settings, 'discord_admin_users') and settings.discord_admin_users:
+    if hasattr(settings, 'admin_user_ids') and settings.admin_user_ids:
         try:
             # 쉼표로 구분된 문자열을 파싱  
-            user_ids = settings.discord_admin_users.split(',')
+            user_ids = settings.admin_user_ids.split(',')
             admin_users = {int(uid.strip()) for uid in user_ids if uid.strip().isdigit()}
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError) as e:
             pass
     
     return BotConfig(
-        token=settings.discord_token,
+        token=getattr(settings, 'discord_bot_token', ''),
         authorized_users=authorized_users,
         admin_users=admin_users,
         command_prefix=getattr(settings, 'discord_command_prefix', '!'),

@@ -5,8 +5,9 @@ ReAct 엔진의 계획 기반 실행 부분을 담당하는 모듈
 """
 
 import asyncio
+import json
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from datetime import datetime
 from ..agent_state import (
     AgentScratchpad, AgentContext, AgentResult, ActionRecord, ObservationRecord, ActionType
@@ -162,21 +163,18 @@ class PlanningExecutor:
                     step.status = PlanTaskStatus.COMPLETED
                     step.result = result.result
                     
-                    # Scratchpad에 기록
-                    action_record = ActionRecord(
+                    # Scratchpad에 기록 (올바른 방법)
+                    action_record = scratchpad.add_action(
                         action_type=ActionType.TOOL_CALL,
                         tool_name=step.tool_name,
                         parameters=validated_params
                     )
                     
-                    observation_record = ObservationRecord(
-                        content=str(step.result.data)
+                    observation_record = scratchpad.add_observation(
+                        content=str(step.result.data),
+                        success=True,
+                        data=step.result.data
                     )
-                    
-                    step_record = scratchpad.start_new_step()
-                    step_record.action = action_record
-                    step_record.observation = observation_record
-                    step_record.end_time = datetime.now()
                     
                     logger.info(f"계획 단계 성공: {step.step_id}")
                     
@@ -243,13 +241,149 @@ class PlanningExecutor:
             if scratchpad.steps:
                 last_observation = scratchpad.steps[-1].observation
                 if last_observation and last_observation.success:
-                    return f"요청하신 작업을 완료했습니다: {last_observation.content}"
+                    # 도구 실행 결과를 사용자 친화적으로 변환
+                    return self._format_user_friendly_response(last_observation.content, context.goal)
             
-            return "계획된 작업들이 완료되었습니다."
+            return "요청하신 작업을 완료했습니다."
             
         except Exception as e:
             logger.error(f"최종 답변 생성 실패: {e}")
             return "작업이 완료되었습니다."
+    
+    def _format_user_friendly_response(self, content: Union[str, dict], goal: str) -> str:
+        """응답을 사용자 친화적으로 포맷팅"""
+        logger.debug(f"포맷팅할 컨텐츠: {content}")
+        logger.debug(f"목표: {goal}")
+        
+        # 이미 딕셔너리인 경우 직접 처리
+        if isinstance(content, dict):
+            logger.debug("컨텐츠가 딕셔너리임")
+            
+            # notion_todo 도구 응답 처리
+            if "todos" in content:
+                logger.debug("todos 키 발견, _format_todo_response 호출")
+                return self._format_todo_response(content)
+                
+            # 기타 도구 응답은 간단히 처리
+            if "message" in content:
+                logger.debug(f"message 키 발견: {content['message']}")
+                return content["message"]
+                
+            # 딕셔너리에서 다른 유용한 정보 찾기
+            if "result" in content:
+                logger.debug(f"result 키 발견: {content['result']}")
+                return str(content["result"])
+                
+            # 딕셔너리 전체를 문자열로 변환해서 재시도
+            logger.debug("딕셔너리를 문자열로 변환 후 재시도")
+            content = str(content)
+        
+        # 문자열인 경우 JSON 추출 시도
+        if isinstance(content, str):
+            logger.debug("컨텐츠가 문자열임, JSON 추출 시도")
+            
+            # {} 블록 찾기
+            json_blocks = []
+            i = 0
+            while i < len(content):
+                if content[i] == '{':
+                    brace_count = 1
+                    start = i
+                    i += 1
+                    while i < len(content) and brace_count > 0:
+                        if content[i] == '{':
+                            brace_count += 1
+                        elif content[i] == '}':
+                            brace_count -= 1
+                        i += 1
+                    
+                    if brace_count == 0:
+                        json_blocks.append(content[start:i])
+                else:
+                    i += 1
+            
+            logger.debug(f"발견된 JSON 블록들: {json_blocks}")
+            
+            # 각 JSON 블록 파싱 시도
+            for json_part in json_blocks:
+                logger.debug(f"파싱 시도할 JSON 부분: {json_part}")
+                if json_part.strip():
+                    try:
+                        # JSON 문자열에서 작은따옴표를 큰따옴표로 변경
+                        json_part_fixed = json_part.replace("'", '"')
+                        data = json.loads(json_part_fixed)
+                        logger.debug(f"파싱된 데이터: {data}")
+                        
+                        # notion_todo 도구 응답 처리
+                        if "todos" in data:
+                            return self._format_todo_response(data)
+                        
+                        # 기타 도구 응답은 간단히 처리
+                        if "message" in data:
+                            return data["message"]
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON 파싱 실패: {e}")
+                        pass
+            
+            # JSON 파싱 실패 시 간단한 메시지로 대체
+            if "할일" in goal or "todo" in goal.lower():
+                return "할일 목록을 확인했습니다."
+            
+            return "요청하신 작업을 완료했습니다."
+        
+        # 기본 반환값
+        return "요청하신 작업을 완료했습니다."
+    
+    def _format_todo_response(self, data: dict) -> str:
+        """할일 응답을 사용자 친화적으로 포맷팅"""
+        try:
+            todos = data.get("todos", [])
+            count = data.get("count", len(todos))
+            
+            if count == 0:
+                return "현재 해야 할 일이 없습니다. 🎉"
+            
+            response = f"📋 **할일 목록** (총 {count}개)\n\n"
+            
+            for i, todo in enumerate(todos[:5], 1):  # 최대 5개만 표시
+                title = todo.get("title", "제목 없음")
+                priority = todo.get("priority", "중간")
+                status = todo.get("status", "상태 없음")
+                due_date = todo.get("due_date", "")
+                
+                # 우선순위 이모지
+                priority_emoji = {"높음": "🔴", "중간": "🟡", "낮음": "🟢"}.get(priority, "⚪")
+                
+                # 상태 이모지  
+                status_emoji = {"진행 중": "⏳", "예정": "📅", "완료": "✅"}.get(status, "📝")
+                
+                response += f"{i}. {priority_emoji} **{title}**\n"
+                response += f"   {status_emoji} {status}"
+                
+                if due_date:
+                    # 날짜 포맷팅
+                    try:
+                        from datetime import datetime
+                        if "T" in due_date:
+                            date_obj = datetime.fromisoformat(due_date.replace("Z", "+00:00"))
+                            formatted_date = date_obj.strftime("%m월 %d일")
+                        else:
+                            formatted_date = due_date
+                        response += f" | 📅 {formatted_date}"
+                    except:
+                        response += f" | 📅 {due_date}"
+                
+                response += "\n\n"
+            
+            if len(todos) > 5:
+                response += f"... 외 {len(todos) - 5}개 더"
+            
+            return response.strip()
+            
+        except Exception as e:
+            logger.error(f"할일 응답 포맷팅 실패: {e}")
+            return f"할일 {data.get('count', 0)}개를 확인했습니다."
     
     async def _generate_partial_result(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
         """부분 결과 생성"""

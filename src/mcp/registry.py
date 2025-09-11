@@ -14,7 +14,7 @@ import importlib
 import inspect
 from pathlib import Path
 
-from .base_tool import BaseTool, ToolMetadata, ToolCategory, ExecutionStatus
+from ..tools.base.tool import BaseTool, ToolMetadata, ToolCategory, ExecutionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class ToolRegistry:
                 
                 # 이미 등록된 도구인지 확인
                 if tool_name in self._tools:
-                    logger.warning(f"도구가 이미 등록되어 있습니다: {tool_name}")
+                    logger.debug(f"도구가 이미 등록되어 있습니다: {tool_name}")
                     return False
                 
                 # 등록 정보 생성
@@ -121,7 +121,7 @@ class ToolRegistry:
                 tool_name = metadata.name
 
                 if tool_name in self._tools:
-                    logger.warning(f"도구가 이미 등록되어 있습니다: {tool_name}")
+                    logger.debug(f"도구가 이미 등록되어 있습니다: {tool_name} (기존: {self._tools[tool_name].tool_class.__name__}, 새로운: {instance.__class__.__name__})")
                     return False
 
                 # 초기화 보장
@@ -297,9 +297,23 @@ class ToolRegistry:
         
         return sorted(list(tools))
     
+    def get_all_tools(self) -> Dict[str, Any]:
+        """
+        모든 도구의 메타데이터 반환 (ReAct 엔진 호환용)
+        
+        Returns:
+            도구 이름을 키로 하고 메타데이터를 값으로 하는 딕셔너리
+        """
+        result = {}
+        for tool_name in self._tools:
+            metadata = self.get_tool_metadata(tool_name)
+            if metadata:
+                result[tool_name] = metadata
+        return result
+    
     def get_categories(self) -> List[ToolCategory]:
-        """등록된 도구 카테고리 목록"""
-        return sorted(list(self._categories.keys()), key=lambda x: x.value)
+        """등록된 모든 카테고리 반환"""
+        return list(self._categories.keys())
     
     def get_tags(self) -> List[str]:
         """등록된 태그 목록"""

@@ -119,7 +119,7 @@ $context
         # 실행 계획 템플릿
         self.add_template(PromptTemplate(
             name="execution_planning",
-            type=PromptType.EXECUTION_PLANNING,
+            type=PromptType.TASK_PLANNING,
             template="""선택된 도구와 매개변수를 기반으로 구체적인 실행 계획을 수립합니다.
 
 [작업 목표]
@@ -168,7 +168,7 @@ $context
         # 명령 재시도 템플릿
         self.add_template(PromptTemplate(
             name="command_retry",
-            type=PromptType.COMMAND_RETRY,
+            type=PromptType.ERROR_HANDLING,
             template="""이전 명령 실행이 실패했습니다. 오류를 분석하여 재시도 전략을 수립해야 합니다.
 
 [원본 명령]

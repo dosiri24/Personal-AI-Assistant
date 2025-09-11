@@ -17,14 +17,32 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from loguru import logger
 from .notification_monitor import NotificationData, MacOSNotificationMonitor
 
-try:
-    # src 패키지 컨텍스트로 임포트하여 상대 import( ..ai_engine )가 정상 동작하도록 함
-    from src.mcp.apple_agent_v2 import AppleAppsAgent
-    AppleAppsAgentType = AppleAppsAgent
-except ImportError:
-    logger.warning("Apple Agent를 가져올 수 없습니다. 시뮬레이션 모드로 실행됩니다.")
-    AppleAppsAgent = None
-    AppleAppsAgentType = Any  # 타입 힌트용
+# Apple Agent 연결을 나중에 지연 로딩으로 처리
+AppleAppsAgent = None
+AppleAppsAgentType = Any  # 타입 힌트용
+
+def get_apple_agent():
+    """Apple Agent를 지연 로딩으로 가져옵니다"""
+    global AppleAppsAgent
+    if AppleAppsAgent is None:
+        try:
+            # 런타임에 동적 import
+            import sys
+            from pathlib import Path
+            
+            # 절대 경로로 모듈 위치 확인
+            project_root = Path(__file__).parent.parent.parent.parent
+            sys.path.insert(0, str(project_root))
+            
+            from src.mcp.apple.apple_agent_v2 import AppleAppsAgent as _AppleAppsAgent
+            AppleAppsAgent = _AppleAppsAgent
+            logger.info("✅ Apple Agent 연결 성공 - 실제 모드로 작동합니다")
+            return AppleAppsAgent
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Apple Agent 연결 실패: {e}. 시뮬레이션 모드로 실행됩니다.")
+            return None
+    return AppleAppsAgent
 
 @dataclass
 class AutoResponseAction:
@@ -65,13 +83,15 @@ class IntelligentAutoResponder:
     async def initialize(self) -> bool:
         """자동 응답 시스템 초기화"""
         try:
-            if AppleAppsAgent:
-                self.apple_agent = AppleAppsAgent()
+            # 지연 로딩으로 Apple Agent 가져오기
+            apple_agent_class = get_apple_agent()
+            if apple_agent_class:
+                self.apple_agent = apple_agent_class()
                 if self.apple_agent:
                     await self.apple_agent.initialize()
-                logger.info("Apple Agent 연동 완료")
+                logger.info("✅ Apple Agent 연동 완료 - 실제 모드")
             else:
-                logger.info("시뮬레이션 모드로 초기화")
+                logger.info("⚠️ 시뮬레이션 모드로 초기화")
             
             return True
         except Exception as e:

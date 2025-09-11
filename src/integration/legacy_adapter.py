@@ -33,16 +33,16 @@ class LegacyMCPAdapter:
         tool_executor: Optional[ToolExecutor] = None,
         prompt_manager: Optional[PromptManager] = None
     ):
-        self.llm_provider = llm_provider
-        self.tool_registry = tool_registry
-        self.tool_executor = tool_executor
-        self.prompt_manager = prompt_manager
+        self._llm_provider: Optional[LLMProvider] = llm_provider
+        self._tool_registry: Optional[ToolRegistry] = tool_registry
+        self._tool_executor: Optional[ToolExecutor] = tool_executor
+        self._prompt_manager: Optional[PromptManager] = prompt_manager
         
         # AgenticController는 도구 등록 후에 초기화
         self.agentic_controller = None
         
         # 호환성을 위한 설정
-        self.config = {}
+        self._config: Dict[str, Any] = {}
         
         logger.info("레거시 MCP 어댑터 초기화 완료")
     
@@ -104,20 +104,46 @@ class LegacyMCPAdapter:
         """도구 자동 발견 및 등록 (기존 방식 유지)"""
         # 1) 일반 도구 자동 발견
         package_path = "src.tools"
-        discovered_count = await self.tool_registry.discover_tools(package_path)
+        discovered_count = await self._tool_registry.discover_tools(package_path) if self._tool_registry else 0
         logger.info(f"발견된 도구 수: {discovered_count} (패키지: {package_path})")
+
+        # 1-1) 수동으로 Notion Todo 도구 등록 (자동 발견으로 등록되지 않은 경우만)
+        current_tools = self._tool_registry.list_tools() if self._tool_registry else []
+        if 'notion_todo' not in current_tools:
+            try:
+                from ..tools.notion.todo_tool import TodoTool
+                todo_tool = TodoTool()
+                logger.info(f"TodoTool 생성 완료: {todo_tool}")
+                
+                await todo_tool.initialize()
+                logger.info(f"TodoTool 초기화 완료")
+                
+                ok = await self._tool_registry.register_tool_instance(todo_tool) if self._tool_registry else False
+                logger.info(f"TodoTool 등록 시도 결과: {ok}")
+                
+                if ok:
+                    logger.info("✅ Notion Todo 도구 수동 등록 완료")
+                    discovered_count += 1
+                else:
+                    logger.warning("❌ Notion Todo 도구 수동 등록 실패")
+            except Exception as e:
+                logger.warning(f"⚠️ Notion Todo 도구 수동 등록 건너뜀: {e}")
+                logger.exception("상세 오류 정보:")  # 스택 트레이스 추가
+        else:
+            logger.info("✅ Notion Todo 도구가 이미 등록되어 있음 (자동 발견)")
+            discovered_count += 1
 
         # 2) Apple MCP 도구 수동 등록
         try:
-            from ..mcp.apple_tools import register_apple_tools
-            from ..mcp.apple_client import AppleAppsManager
+            from ..mcp.apple.apple_tools import register_apple_tools
+            from ..mcp.apple.apple_client import AppleAppsManager
 
             apple_manager = AppleAppsManager()
             apple_tools = register_apple_tools(apple_manager)
 
             registered = 0
             for tool in apple_tools:
-                ok = await self.tool_registry.register_tool_instance(tool)
+                ok = await self._tool_registry.register_tool_instance(tool) if self._tool_registry else False
                 if ok:
                     registered += 1
 
@@ -222,24 +248,30 @@ class LegacyMCPAdapter:
     
     def get_available_tools(self) -> List[str]:
         """사용 가능한 도구 목록 반환 (기존 인터페이스)"""
-        return list(self.tool_registry.list_tools())
+        return list(self._tool_registry.list_tools()) if self._tool_registry else []
     
     async def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """직접 도구 실행 (기존 인터페이스)"""
         try:
-            result = await self.tool_executor.execute_tool(tool_name, parameters)
+            result = await self._tool_executor.execute_tool(tool_name, parameters) if self._tool_executor else None
             
-            if result.result.is_success:
+            if result and result.result.is_success:
                 return {
                     "success": True,
                     "data": result.result.data,
                     "message": "도구 실행 성공"
                 }
-            else:
+            elif result:
                 return {
                     "success": False,
                     "error": result.result.error_message,
                     "message": "도구 실행 실패"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Tool executor not available",
+                    "message": "도구 실행기가 초기화되지 않음"
                 }
                 
         except Exception as e:
@@ -252,7 +284,7 @@ class LegacyMCPAdapter:
     
     def get_tool_metadata(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """도구 메타데이터 조회 (기존 인터페이스)"""
-        metadata = self.tool_registry.get_tool_metadata(tool_name)
+        metadata = self._tool_registry.get_tool_metadata(tool_name) if self._tool_registry else None
         if metadata:
             return {
                 "name": metadata.name,
@@ -353,7 +385,7 @@ class LegacyMCPAdapter:
         self._config = value
     
     @property
-    def llm_provider(self) -> LLMProvider:
+    def llm_provider(self) -> Optional[LLMProvider]:
         """LLM 프로바이더 (기존 호환성)"""
         return self._llm_provider
     
@@ -363,7 +395,7 @@ class LegacyMCPAdapter:
         self._llm_provider = value
     
     @property
-    def tool_registry(self) -> ToolRegistry:
+    def tool_registry(self) -> Optional[ToolRegistry]:
         """도구 레지스트리 (기존 호환성)"""
         return self._tool_registry
     
@@ -373,7 +405,7 @@ class LegacyMCPAdapter:
         self._tool_registry = value
     
     @property
-    def tool_executor(self) -> ToolExecutor:
+    def tool_executor(self) -> Optional[ToolExecutor]:
         """도구 실행기 (기존 호환성)"""
         return self._tool_executor
     
@@ -381,3 +413,13 @@ class LegacyMCPAdapter:
     def tool_executor(self, value: ToolExecutor):
         """도구 실행기 설정"""
         self._tool_executor = value
+    
+    @property
+    def prompt_manager(self) -> Optional[PromptManager]:
+        """프롬프트 관리자 (기존 호환성)"""
+        return self._prompt_manager
+    
+    @prompt_manager.setter
+    def prompt_manager(self, value: PromptManager):
+        """프롬프트 관리자 설정"""
+        self._prompt_manager = value

@@ -57,7 +57,7 @@ $search_context
         # 패턴 분석 템플릿
         self.add_template(PromptTemplate(
             name="pattern_analysis",
-            type=PromptType.PATTERN_ANALYSIS,
+            type=PromptType.DATA_ANALYSIS,
             template="""수집된 과거 데이터에서 의미있는 패턴을 분석합니다.
 
 [분석 대상 데이터]
@@ -104,7 +104,7 @@ $analysis_scope
         # 컨텍스트 매칭 템플릿
         self.add_template(PromptTemplate(
             name="context_matching",
-            type=PromptType.CONTEXT_MATCHING,
+            type=PromptType.CONTEXT_AWARE_PLANNING,
             template="""현재 상황과 유사한 과거 컨텍스트를 찾아 매칭합니다.
 
 [현재 컨텍스트]
@@ -154,7 +154,7 @@ $matching_criteria
         # 학습 통합 템플릿
         self.add_template(PromptTemplate(
             name="learning_integration",
-            type=PromptType.LEARNING_INTEGRATION,
+            type=PromptType.DATA_ANALYSIS,
             template="""새로운 경험을 기존 지식과 통합하여 학습을 강화합니다.
 
 [새로운 경험]
@@ -210,7 +210,7 @@ $learning_objectives
         # 예측 생성 템플릿
         self.add_template(PromptTemplate(
             name="prediction_generation",
-            type=PromptType.PREDICTION_GENERATION,
+            type=PromptType.PERSONALIZED_RESPONSE,
             template="""과거 패턴을 바탕으로 미래 상황을 예측합니다.
 
 [예측 대상]

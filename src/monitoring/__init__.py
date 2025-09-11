@@ -1,7 +1,5 @@
 # 모니터링 시스템
 from .dashboard import MonitoringDashboard
-from .metrics_collector import MetricsCollector
-from .alert_system import AlertSystem
-from .report_generator import ReportGenerator
+from .process_monitor import ProcessMonitor, AutoRestartManager, HealthCheckResult, ProcessMetrics
 
-__all__ = ['MonitoringDashboard', 'MetricsCollector', 'AlertSystem', 'ReportGenerator']
+__all__ = ['MonitoringDashboard', 'ProcessMonitor', 'AutoRestartManager', 'HealthCheckResult', 'ProcessMetrics']

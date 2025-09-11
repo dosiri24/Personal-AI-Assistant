@@ -19,7 +19,7 @@ from ..config import Settings
 from ..mcp.base_tool import ExecutionStatus
 from ..tools.notion.todo_tool import TodoTool
 from ..tools.notion.calendar_tool import CalendarTool
-from ..tools.calculator_tool import CalculatorTool
+from ..tools.core.calculator import CalculatorTool
 # from ..tools.web_scraper.web_scraper_tool import WebScraperTool  # 일시적으로 비활성화
 try:
     from ..tools.apple.auto_responder import IntelligentAutoResponder
@@ -198,7 +198,7 @@ class AIMessageHandler:
         except Exception as e:
             logger.error(f"Gemini Provider 비동기 초기화 중 오류: {e}")
     
-    async def process_message(self, user_message: str, user_id: str, channel_id: str) -> AIResponse:
+    async def process_message(self, user_message: str, user_id: str, channel_id: str, metadata: Optional[Dict[str, Any]] = None) -> AIResponse:
         """사용자 메시지 처리: LLM이 도구 선택/실행(MCP)까지 담당"""
         try:
             # MCP 통합 초기화 (한 번만)

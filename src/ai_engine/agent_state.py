@@ -54,6 +54,7 @@ class ActionRecord:
     action_type: ActionType
     tool_name: Optional[str] = None
     parameters: Dict[str, Any] = field(default_factory=dict)
+    description: Optional[str] = None  # 행동에 대한 설명
     timestamp: datetime = field(default_factory=datetime.now)
     status: StepStatus = StepStatus.PENDING
     execution_time: Optional[float] = None
@@ -64,6 +65,7 @@ class ActionRecord:
             "action_type": self.action_type.value,
             "tool_name": self.tool_name,
             "parameters": self.parameters,
+            "description": self.description,
             "timestamp": self.timestamp.isoformat(),
             "status": self.status.value,
             "execution_time": self.execution_time,

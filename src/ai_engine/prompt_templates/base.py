@@ -29,9 +29,11 @@ class PromptType(Enum):
     SCHEDULE_MANAGEMENT = "schedule_management"
     FILE_OPERATIONS = "file_operations"
     WEB_SEARCH = "web_search"
+    WEB_SCRAPING = "web_scraping"
     EMAIL_MANAGEMENT = "email_management"
     NOTE_TAKING = "note_taking"
     AUTOMATION_SETUP = "automation_setup"
+    AUTOMATION_WORKFLOW = "automation_workflow"
     DATA_ANALYSIS = "data_analysis"
     CREATIVE_WRITING = "creative_writing"
     
@@ -40,6 +42,8 @@ class PromptType(Enum):
     CONTEXT_AWARE_PLANNING = "context_aware_planning"
     FEEDBACK_ANALYSIS = "feedback_analysis"
     PREFERENCE_LEARNING = "preference_learning"
+    QUALITY_VERIFICATION = "quality_verification"
+    PERFORMANCE_REPORT = "performance_report"
 
 
 @dataclass
@@ -81,7 +85,8 @@ class BasePromptManager:
     def add_template(self, template: PromptTemplate):
         """템플릿 추가"""
         self.templates[template.name] = template
-        logger.debug(f"템플릿 추가됨: {template.name}")
+        # 템플릿 추가 로그를 더 조용하게 변경
+        # logger.debug(f"템플릿 추가됨: {template.name}")
         
     def get_template(self, name: str) -> Optional[PromptTemplate]:
         """템플릿 조회"""

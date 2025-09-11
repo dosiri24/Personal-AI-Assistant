@@ -14,7 +14,7 @@ import importlib
 import inspect
 from pathlib import Path
 
-from .base_tool import BaseTool, ToolMetadata, ToolCategory, ExecutionStatus
+from .base import BaseTool, ToolMetadata, ToolCategory, ExecutionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,9 @@ class ToolRegistry:
         if registration.instance is None:
             try:
                 registration.instance = registration.tool_class()
-                if not await registration.instance.initialize():
+                # 타입 가드: instance가 None이 아님을 보장
+                instance = registration.instance
+                if instance is not None and not await instance.initialize():
                     logger.error(f"도구 초기화 실패: {tool_name}")
                     return None
             except Exception as e:
@@ -452,7 +454,11 @@ class ToolRegistry:
             
             # 새 인스턴스 생성 및 초기화
             registration.instance = registration.tool_class()
-            success = await registration.instance.initialize()
+            # 타입 가드: instance가 None이 아님을 보장
+            instance = registration.instance
+            success = False
+            if instance is not None:
+                success = await instance.initialize()
             
             if success:
                 logger.info(f"도구 재로드 완료: {tool_name}")

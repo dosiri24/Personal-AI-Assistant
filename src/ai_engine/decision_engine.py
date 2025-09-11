@@ -165,7 +165,7 @@ class AgenticDecisionEngine:
         for tool in default_tools:
             self.available_tools[tool.name] = tool
             
-        self.logger.debug(f"{len(default_tools)}개 기본 도구 등록 완료")
+        self.logger.info(f"{len(default_tools)}개 기본 도구 등록 완료")
     
     async def make_decision(self, context: DecisionContext) -> Decision:
         """

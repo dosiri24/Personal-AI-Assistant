@@ -206,7 +206,8 @@ class ReactEngine:
                             "type": p.type.value,
                             "description": p.description,
                             "required": p.required,
-                            "default": p.default
+                            "default": p.default,
+                            "choices": getattr(p, 'choices', None)  # choices 정보 추가
                         }
                         for p in tool_meta.parameters
                     ]
@@ -299,7 +300,7 @@ class ReactEngine:
     def _create_action_system_prompt(self, context, tools_info):
         """행동 시스템 프롬프트 생성"""
         tools_description = "\n".join([
-            f"- {tool['name']}: {tool['description']}"
+            f"- {tool['name']}: {tool['description']}\n  파라미터: {self._format_parameters_description(tool['parameters'])}"
             for tool in tools_info
         ])
         
@@ -318,7 +319,22 @@ class ReactEngine:
 2. 최종 답변:
 {{"action_type": "final_answer", "answer": "최종 답변 내용"}}
 
+⚠️ 중요: 각 파라미터의 허용값(choices)을 정확히 확인하고 사용하세요.
+
+예시: notion_todo로 할일 목록 조회하려면:
+{{"action_type": "tool_call", "tool_name": "notion_todo", "parameters": {{"action": "list"}}}}
+
 목표 달성을 위해 가장 적절한 행동을 선택하세요."""
+    
+    def _format_parameters_description(self, parameters):
+        """파라미터 설명을 포맷팅 (choices 정보 포함)"""
+        descriptions = []
+        for p in parameters:
+            desc = f"{p['name']}({'필수' if p['required'] else '선택'}): {p['description']}"
+            if p.get('choices'):
+                desc += f" [가능한 값: {', '.join(p['choices'])}]"
+            descriptions.append(desc)
+        return ", ".join(descriptions)
     
     def _create_action_user_prompt(self, thought, scratchpad):
         """행동 사용자 프롬프트 생성"""

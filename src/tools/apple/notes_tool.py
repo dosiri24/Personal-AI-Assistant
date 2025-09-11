@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-from src.mcp.base_tool import BaseTool, ToolResult, ExecutionStatus, ToolMetadata, ToolCategory, ToolParameter, ParameterType
+from ..base.tool import BaseTool, ToolResult, ExecutionStatus, ToolMetadata, ToolCategory, ToolParameter, ParameterType
 
 logger = logging.getLogger(__name__)
 

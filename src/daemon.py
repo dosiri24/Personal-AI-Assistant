@@ -31,7 +31,7 @@ class DaemonManager:
     def _initialize_monitoring(self):
         """모니터링 시스템 초기화"""
         try:
-            from process_monitor import ProcessMonitor, AutoRestartManager
+            from .monitoring.process_monitor import ProcessMonitor, AutoRestartManager
             
             metrics_file = self.pid_dir / "process_metrics.json"
             self.process_monitor = ProcessMonitor(metrics_file)

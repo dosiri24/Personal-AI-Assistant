@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field
 
-from ...mcp.base_tool import BaseTool, ToolMetadata, ToolResult, ExecutionStatus, ToolCategory, ToolParameter, ParameterType
+from ..base import BaseTool, ToolMetadata, ToolResult, ExecutionStatus, ToolCategory, ToolParameter, ParameterType
 from ...config import Settings
 from ...utils.logger import get_logger
 from .client import NotionClient, NotionError, create_notion_property, create_text_block
@@ -67,7 +67,7 @@ class TodoTool(BaseTool):
             ToolParameter(
                 name="action",
                 type=ParameterType.STRING,
-                description="수행할 작업 (create, update, delete, get, list, complete)",
+                description="수행할 작업: 'list'(할일목록조회), 'create'(할일생성), 'update'(할일수정), 'delete'(할일삭제), 'get'(특정할일조회), 'complete'(할일완료)",
                 required=True,
                 choices=["create", "update", "delete", "get", "list", "complete"]
             ),
@@ -166,7 +166,7 @@ class TodoTool(BaseTool):
         return ToolMetadata(
             name="notion_todo",
             version="1.0.0",
-            description="Notion 할일 데이터베이스에서 할일을 관리합니다",
+            description="Notion 할일 데이터베이스에서 할일을 관리합니다. 할일 목록 조회시 action='list' 사용",
             category=ToolCategory.PRODUCTIVITY,
             parameters=parameters,
             tags=["notion", "todo", "task", "productivity"]

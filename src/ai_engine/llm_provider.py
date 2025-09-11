@@ -31,10 +31,10 @@ from typing import TYPE_CHECKING
 
 # 성능 최적화 모듈 import
 from ..utils.performance import (
-    global_cache, global_resource_pool, global_performance_monitor,
-    cache_result, performance_monitor
+    global_cache, global_performance_monitor,
+    monitor_performance
 )
-from ..utils.error_handler import handle_errors, retry_on_failure, APIError
+from ..utils.error_handler import global_error_handler, retry_on_failure, AINetworkError
 
 if TYPE_CHECKING:
     from ..config import Settings

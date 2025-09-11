@@ -34,7 +34,7 @@ except ImportError:
     DASH_AVAILABLE = False
 
 from ..utils.logger import get_logger
-from ..utils.error_handler import error_handler, AISystemError
+from ..utils.error_handler import global_error_handler as error_handler, AISystemError
 from ..utils.performance import global_performance_monitor
 
 logger = get_logger(__name__)
