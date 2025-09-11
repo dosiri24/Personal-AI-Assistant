@@ -68,7 +68,7 @@ def get_container() -> DIContainer:
 
 def setup_container():
     """컨테이너 설정"""
-    from ..core.agent.llm_provider import GeminiProvider
+    from ..ai_engine.llm_provider import GeminiProvider
     from ..tools.registry import ToolRegistry  
     from ..tools.base_tool import ToolExecutor
     from ..infrastructure.config.config import ConfigProvider

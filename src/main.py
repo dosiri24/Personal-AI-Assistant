@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 from src.infrastructure.config.settings import get_settings
 from src.shared.logging import setup_logging, get_logger
 from src.infrastructure.container import setup_container
-from src.core.mcp_integration import get_unified_mcp_system
+# from src.mcp.mcp_integration import get_unified_mcp_system  # TODO: 함수명 확인 필요
 
 
 async def initialize_system():
@@ -43,8 +43,8 @@ async def initialize_system():
     logger.info("의존성 주입 컨테이너 설정 완료")
     
     # 통합 MCP 시스템 초기화
-    mcp_system = get_unified_mcp_system()
-    await mcp_system.initialize()
+    # mcp_system = get_unified_mcp_system()  # TODO: MCP 시스템 초기화
+    # await mcp_system.initialize()
     logger.info("MCP 시스템 초기화 완료")
     
     return settings, logger
@@ -57,7 +57,7 @@ async def run_cli_mode():
     logger.info("CLI 모드로 실행")
     
     # MCP 시스템 가져오기
-    mcp_system = get_unified_mcp_system()
+    # mcp_system = get_unified_mcp_system()  # TODO: MCP 시스템 연결
     
     print("Personal AI Assistant CLI 모드")
     print("'exit' 또는 'quit'을 입력하면 종료됩니다.")
@@ -74,7 +74,8 @@ async def run_cli_mode():
                 continue
             
             # 사용자 요청 처리
-            response = await mcp_system.process_user_request(user_input)
+            # response = await mcp_system.process_user_request(user_input)  # TODO: MCP 처리
+            response = f"TODO: MCP 시스템 연결 필요 - 입력: {user_input}"
             print(f"응답: {response}")
             print()
             

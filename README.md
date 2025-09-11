@@ -1,8 +1,12 @@
-# Personal AI Assistant ✨ **리팩토링 완료**
+# Personal AI Assistant ✨ **모듈화 리팩토링 완료**
 
 **에이전틱 AI 기반 지능형 개인 비서** - Discord를 통해 자연어 명령을 받아 ReAct 엔진이 스스로 판단하고 MCP 도구를 활용하여 자율적으로 임무를 완수하는 차세대 AI 시스템
 
-> 🚀 **2025.09 리팩토링 완료**: 복잡한 5계층 구조를 4계층으로 단순화하고, 중복 코드 제거, 타입 안전성 강화, 의존성 주입 도입으로 유지보수성과 확장성을 대폭 개선했습니다!
+> 🚀 **2025.09 모듈화 리팩토링 완료**: 복잡한 모놀리식 파일들을 체계적으로 분해하여 유지보수성과 확장성을 극대화했습니다!
+> - **React Engine**: 1,456줄 → 6개 모듈로 분리
+> - **Prompt Templates**: 844줄 → 6개 모듈로 분리  
+> - **Natural Language**: 662줄 → 8개 모듈로 분리
+> - **100% 역호환성 보장**: 기존 코드 수정 없이 그대로 사용 가능
 
 ## 🎯 핵심 기능
 
@@ -97,7 +101,7 @@ PAI_TIMEOUT_SECONDS=600             # 작업 타임아웃 (초)
 누락된 "action" 매개변수 기본값 자동 추가
 ```
 
-## 🚀 빠른 시작 (리팩토링 완료)
+## 🚀 빠른 시작 (모듈화 완료)
 
 ### 1. 설치
 
@@ -331,7 +335,7 @@ sequenceDiagram
     D->>U: 결과 전달
 ```
 
-### 📁 리팩토링된 프로젝트 구조
+### 📁 모듈화된 프로젝트 구조
 
 ```
 Personal-AI-Assistant/
@@ -339,11 +343,59 @@ Personal-AI-Assistant/
 ├── 📋 pyproject.toml                     # Poetry 프로젝트 설정
 ├── ⚙️ .env                              # 환경 변수 설정
 ├── 📄 README.md                         # 프로젝트 문서 (업데이트됨)
-├── 📄 리팩.md                           # 리팩토링 계획서
 ├── 📄 requirements.txt                  # pip 의존성 (백업용)
 │
-├── 📁 src/                              # 리팩토링된 소스코드
+├── 📁 src/                              # 모듈화된 소스코드
 │   ├── 📄 __init__.py
+│   ├── 📄 config.py                     # 통합 설정 관리
+│   ├── 📄 main.py                       # 메인 애플리케이션
+│   │
+│   ├── 🧠 ai_engine/                    # ✨ 모듈화 완료 ✨
+│   │   ├── 📄 __init__.py
+│   │   ├── 🤖 react_engine/            # ReAct 엔진 (6개 모듈)
+│   │   │   ├── __init__.py              # 통합 인터페이스
+│   │   │   ├── types.py                 # 기본 타입 정의
+│   │   │   ├── observation.py          # 관찰 및 상태 관리
+│   │   │   ├── reasoning.py            # 추론 엔진
+│   │   │   ├── action.py               # 행동 실행
+│   │   │   ├── planning.py             # 계획 수립
+│   │   │   └── core.py                 # 메인 ReAct 엔진
+│   │   │
+│   │   ├── � prompt_templates/         # 프롬프트 템플릿 (6개 모듈)
+│   │   │   ├── __init__.py              # 통합 관리자
+│   │   │   ├── base.py                  # 기본 클래스
+│   │   │   ├── command.py               # 명령 분석
+│   │   │   ├── memory.py                # 메모리 기능
+│   │   │   ├── results.py               # 결과 처리
+│   │   │   └── tools.py                 # 도구 전문 기능
+│   │   │
+│   │   ├── 🗣️ natural_language/         # 자연어 처리 (8개 모듈)
+│   │   │   ├── __init__.py              # 통합 인터페이스
+│   │   │   ├── types.py                 # 기본 데이터 타입
+│   │   │   ├── command_processing.py    # 명령 파싱
+│   │   │   ├── task_planning.py         # 작업 계획
+│   │   │   ├── tool_integration.py      # MCP 도구 연계
+│   │   │   ├── personalization.py      # 개인화 관리
+│   │   │   ├── learning.py              # 학습 최적화
+│   │   │   └── core.py                  # 메인 처리기
+│   │   │
+│   │   ├── 📄 llm_provider.py           # LLM 공급자 (다음 타겟)
+│   │   ├── 📄 prompt_optimizer.py       # 프롬프트 최적화
+│   │   ├── 📄 response_generator.py     # 응답 생성
+│   │   └── ... (기타 파일들)
+│   │
+│   ├── 🔧 mcp/                          # MCP 도구 통합
+│   ├── � discord_bot/                  # Discord 봇 인터페이스  
+│   ├── 🧠 memory/                       # 장기기억 시스템
+│   ├── �️ tools/                       # 각종 도구들
+│   └── ... (기타 모듈들)
+│
+├── 📁 external/                         # 외부 MCP 서버
+│   └── apple-mcp/                       # Apple 자동화 서버
+│
+├── 📁 logs/                             # 로그 파일들
+├── 📁 data/                             # 데이터베이스 파일들
+└── 📁 docs/                             # 문서 및 가이드
 │   ├── 📋 main.py                       # 새로운 메인 진입점
 │   │
 │   ├── 🏗️ core/                        # 핵심 비즈니스 로직
