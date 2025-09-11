@@ -90,6 +90,9 @@ class DiscordBot:
         
         # 이벤트 핸들러 등록
         self._setup_event_handlers()
+        
+        # 슬래시 명령어 등록
+        self._setup_slash_commands()
 
         self.logger.info("Discord Bot 초기화 완료 (Phase 2 Step 2.4 - 대화 세션 관리 포함)")
         
@@ -165,6 +168,14 @@ class DiscordBot:
                 self.logger.warning(f"봇 사용자명 변경 실패(권한/쿨다운 가능): {e}")
             
             self.is_running = True
+            
+            # 슬래시 명령어 동기화
+            try:
+                synced = await self.bot.tree.sync()
+                self.logger.info(f"슬래시 명령어 {len(synced)}개 동기화 완료")
+            except Exception as e:
+                self.logger.error(f"슬래시 명령어 동기화 실패: {e}")
+            
             self.logger.info("Discord Bot 준비 완료")
 
             # 정각 리마인더 루프 시작
@@ -265,7 +276,301 @@ class DiscordBot:
             await self._handle_ai_message(message)
             
             # 명령어 처리
+            # 이벤트 핸들러에서 bot.process_commands 호출
             await self.bot.process_commands(message)
+    
+    def _setup_slash_commands(self):
+        """슬래시 명령어 설정"""
+        
+        @self.bot.tree.command(name="help", description="사용 가능한 명령어 목록을 표시합니다")
+        async def help_slash(interaction: discord.Interaction):
+            """도움말 슬래시 명령어"""
+            embed = discord.Embed(
+                title="🤖 Personal AI Assistant 명령어",
+                description="사용 가능한 슬래시 명령어 목록입니다",
+                color=0x00ff00
+            )
+            
+            embed.add_field(
+                name="/help",
+                value="이 도움말을 표시합니다",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="/status",
+                value="봇의 현재 상태를 확인합니다",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="/server",
+                value="서버의 현재 상태를 확인합니다",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="/shutdown",
+                value="서버를 안전하게 종료합니다 (관리자 전용)",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="/ping",
+                value="봇의 응답 속도를 확인합니다",
+                inline=False
+            )
+            
+            embed.set_footer(text="자연어로 대화하시려면 그냥 메시지를 보내세요!")
+            
+            await interaction.response.send_message(embed=embed)
+        
+        @self.bot.tree.command(name="status", description="봇의 현재 상태를 확인합니다")
+        async def status_slash(interaction: discord.Interaction):
+            """상태 확인 슬래시 명령어"""
+            status = self.get_status()
+            
+            embed = discord.Embed(
+                title="🤖 봇 상태",
+                color=0x00ff00 if status['is_running'] else 0xff0000
+            )
+            
+            embed.add_field(
+                name="상태",
+                value="🟢 실행 중" if status['is_running'] else "🔴 중지됨",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="서버 수",
+                value=str(status['guild_count']),
+                inline=True
+            )
+            
+            embed.add_field(
+                name="응답 속도",
+                value=f"{status['latency']}ms" if status['latency'] else "측정 불가",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="허용된 사용자",
+                value=f"{status['allowed_users_count']}명",
+                inline=True
+            )
+            
+            if status['user']:
+                embed.set_footer(text=f"봇 계정: {status['user']}")
+            
+            await interaction.response.send_message(embed=embed)
+        
+        @self.bot.tree.command(name="server", description="서버의 현재 상태를 확인합니다")
+        async def server_status_slash(interaction: discord.Interaction):
+            """서버 상태 확인 슬래시 명령어"""
+            import psutil
+            import platform
+            from datetime import datetime, timedelta
+            
+            # 서버 정보 수집
+            try:
+                # 시스템 정보
+                cpu_percent = psutil.cpu_percent(interval=1)
+                memory = psutil.virtual_memory()
+                disk = psutil.disk_usage('/')
+                
+                # 프로세스 정보
+                process = psutil.Process()
+                process_memory = process.memory_info()
+                
+                # 실행 시간
+                boot_time = psutil.boot_time()
+                uptime = datetime.now() - datetime.fromtimestamp(boot_time)
+                
+                embed = discord.Embed(
+                    title="🖥️ 서버 상태",
+                    color=0x00ff00
+                )
+                
+                # 시스템 정보
+                embed.add_field(
+                    name="시스템",
+                    value=f"OS: {platform.system()} {platform.release()}\nPython: {platform.python_version()}",
+                    inline=True
+                )
+                
+                # CPU & 메모리
+                embed.add_field(
+                    name="리소스",
+                    value=f"CPU: {cpu_percent}%\n메모리: {memory.percent}%\n디스크: {disk.percent}%",
+                    inline=True
+                )
+                
+                # 서버 업타임
+                embed.add_field(
+                    name="가동 시간",
+                    value=f"{uptime.days}일 {uptime.seconds//3600}시간 {(uptime.seconds//60)%60}분",
+                    inline=True
+                )
+                
+                # 프로세스 정보
+                embed.add_field(
+                    name="AI 서버 프로세스",
+                    value=f"PID: {process.pid}\n메모리: {process_memory.rss // 1024 // 1024}MB",
+                    inline=True
+                )
+                
+                # 네트워크 연결
+                embed.add_field(
+                    name="네트워크",
+                    value=f"Discord: 연결됨\n응답속도: {round(self.bot.latency * 1000, 2)}ms",
+                    inline=True
+                )
+                
+                # 서비스 상태
+                services_status = "✅ Discord Bot\n✅ Message Queue\n✅ Session Manager"
+                if hasattr(self, '_reminder_task') and self._reminder_task:
+                    services_status += "\n✅ Reminder Service"
+                embed.add_field(
+                    name="서비스 상태",
+                    value=services_status,
+                    inline=True
+                )
+                
+                embed.set_footer(text=f"마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                
+            except Exception as e:
+                embed = discord.Embed(
+                    title="❌ 서버 상태 확인 오류",
+                    description=f"서버 정보를 가져오는 중 오류가 발생했습니다: {str(e)}",
+                    color=0xff0000
+                )
+            
+            await interaction.response.send_message(embed=embed)
+        
+        @self.bot.tree.command(name="ping", description="봇의 응답 속도를 확인합니다")
+        async def ping_slash(interaction: discord.Interaction):
+            """핑 슬래시 명령어"""
+            latency = round(self.bot.latency * 1000, 2)
+            await interaction.response.send_message(f"🏓 Pong! 응답 속도: {latency}ms")
+        
+        @self.bot.tree.command(name="calculate", description="수학 계산을 수행합니다")
+        async def calculate_slash(interaction: discord.Interaction, expression: str):
+            """계산기 슬래시 명령어"""
+            try:
+                # CalculatorTool 사용
+                from ..tools.calculator_tool import CalculatorTool
+                calculator = CalculatorTool()
+                result = await calculator.execute(expression=expression)
+                
+                if result.status.value == "success":
+                    embed = discord.Embed(
+                        title="🧮 계산 결과",
+                        color=0x00ff00
+                    )
+                    embed.add_field(
+                        name="식",
+                        value=f"`{expression}`",
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="결과",
+                        value=f"`{result.data['result']}`",
+                        inline=False
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="❌ 계산 오류",
+                        description=result.data.get('error', '알 수 없는 오류'),
+                        color=0xff0000
+                    )
+                
+                await interaction.response.send_message(embed=embed)
+                
+            except Exception as e:
+                self.logger.error(f"계산 오류: {e}")
+                embed = discord.Embed(
+                    title="❌ 계산 오류",
+                    description=f"계산 중 오류가 발생했습니다: {str(e)}",
+                    color=0xff0000
+                )
+                await interaction.response.send_message(embed=embed)
+        
+        @self.bot.tree.command(name="shutdown", description="서버를 안전하게 종료합니다 (관리자 전용)")
+        async def shutdown_slash(interaction: discord.Interaction):
+            """서버 종료 슬래시 명령어 (관리자 전용)"""
+            # 관리자 권한 확인
+            if interaction.user.id not in self.admin_users:
+                embed = discord.Embed(
+                    title="❌ 권한 없음",
+                    description="이 명령어는 관리자만 사용할 수 있습니다.",
+                    color=0xff0000
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            embed = discord.Embed(
+                title="🔴 서버 종료",
+                description="서버를 안전하게 종료합니다...\n모든 서비스가 중지됩니다.",
+                color=0xff9900
+            )
+            await interaction.response.send_message(embed=embed)
+            
+            self.logger.info(f"관리자 {interaction.user}에 의해 서버 종료 요청됨")
+            
+            # 서버 종료
+            asyncio.create_task(self._shutdown_server_gracefully())
+    
+    async def _shutdown_server_gracefully(self):
+        """서버를 안전하게 종료"""
+        try:
+            await asyncio.sleep(1)  # 응답 메시지가 전송될 시간을 줌
+            
+            self.logger.info("서버 종료 시작...")
+            
+            # Discord 연결 알림 메시지 전송
+            try:
+                for guild in self.bot.guilds:
+                    # 시스템 채널이나 첫 번째 텍스트 채널에 종료 알림
+                    channel = guild.system_channel
+                    if not channel:
+                        # 시스템 채널이 없으면 첫 번째 텍스트 채널 사용
+                        text_channels = [ch for ch in guild.channels if isinstance(ch, discord.TextChannel)]
+                        if text_channels:
+                            channel = text_channels[0]
+                    
+                    if channel:
+                        embed = discord.Embed(
+                            title="🔴 서버 종료",
+                            description="서버가 안전하게 종료됩니다.",
+                            color=0xff0000
+                        )
+                        await channel.send(embed=embed)
+            except Exception as e:
+                self.logger.warning(f"종료 알림 전송 실패: {e}")
+            
+            # 모든 백그라운드 작업 정리
+            self.logger.info("백그라운드 서비스 정리 중...")
+            await self.stop()
+            
+            self.logger.info("서버 종료 요청 완료")
+            
+            # 전역 종료 플래그 설정 (main.py에서 확인)
+            import os
+            shutdown_file = "/tmp/ai_assistant_shutdown_requested"
+            with open(shutdown_file, "w") as f:
+                f.write("shutdown_requested")
+            
+            self.logger.info("종료 신호 파일 생성됨")
+            
+        except Exception as e:
+            self.logger.error(f"서버 종료 중 오류: {e}")
+            # 강제 종료용 파일 생성
+            import os
+            try:
+                with open("/tmp/ai_assistant_force_shutdown", "w") as f:
+                    f.write("force_shutdown")
+            except Exception:
+                pass
     
     def _is_authorized_user(self, user_id: int) -> bool:
         """

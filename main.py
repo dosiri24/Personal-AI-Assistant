@@ -16,6 +16,7 @@ import asyncio
 import os
 import sys
 import atexit
+import signal
 from pathlib import Path
 
 
@@ -43,6 +44,7 @@ async def _run() -> None:
     from src.config import Settings
     from src.discord_bot.bot import DiscordBot
     from src.mcp.apple_mcp_manager import autostart_if_configured
+    import os
 
     logger = get_logger("root_launcher")
 
@@ -57,9 +59,46 @@ async def _run() -> None:
         return
 
     bot = DiscordBot(settings)
+    
+    # 종료 신호 파일 정리
+    shutdown_files = ["/tmp/ai_assistant_shutdown_requested", "/tmp/ai_assistant_force_shutdown"]
+    for file_path in shutdown_files:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
+    
     try:
         logger.info("Discord Bot 시작")
-        await bot.start()
+        
+        # 비동기적으로 봇 시작과 종료 신호 감지 실행
+        bot_task = asyncio.create_task(bot.start())
+        shutdown_monitor_task = asyncio.create_task(_monitor_shutdown_signal(logger))
+        
+        # 둘 중 하나가 완료될 때까지 대기
+        done, pending = await asyncio.wait(
+            [bot_task, shutdown_monitor_task], 
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # 아직 실행 중인 태스크들 취소
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+                
+        # 완료된 태스크의 예외 확인
+        for task in done:
+            try:
+                task.result()
+            except Exception as e:
+                if not isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    logger.error(f"태스크 실행 중 오류: {e}")
+                    raise
+                    
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt 수신, 종료 절차 진행")
     except Exception as e:
@@ -76,14 +115,51 @@ async def _run() -> None:
                 mcp_manager.stop_background()
         except Exception:
             pass
+        
+        # 종료 신호 파일 정리
+        for file_path in shutdown_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception:
+                pass
+
+
+async def _monitor_shutdown_signal(logger):
+    """종료 신호 파일을 모니터링"""
+    import os
+    
+    shutdown_file = "/tmp/ai_assistant_shutdown_requested"
+    force_shutdown_file = "/tmp/ai_assistant_force_shutdown"
+    
+    while True:
+        try:
+            if os.path.exists(force_shutdown_file):
+                logger.info("강제 종료 신호 감지됨")
+                raise SystemExit(1)
+            elif os.path.exists(shutdown_file):
+                logger.info("정상 종료 신호 감지됨")
+                raise SystemExit(0)
+            
+            await asyncio.sleep(0.5)  # 0.5초마다 확인
+            
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception as e:
+            logger.warning(f"종료 신호 모니터링 중 오류: {e}")
+            await asyncio.sleep(1)
 
 
 def main() -> None:
     _ensure_project_on_path()
     _bootstrap_certs()
+    
     # 단일 인스턴스 보장: PID 파일 잠금
     from src.config import Settings
+    from src.utils.logger import get_logger
+    
     settings = Settings()
+    logger = get_logger("main")
     pid_path = settings.get_data_dir() / "discord_bot.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -118,11 +194,29 @@ def main() -> None:
         except Exception:
             pass
 
+    def _signal_handler(signum, frame):
+        """신호 처리기"""
+        logger.info(f"신호 {signum} 수신됨. 서버를 정상 종료합니다.")
+        _cleanup()
+        sys.exit(0)
+
+    # 신호 처리기 등록
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     atexit.register(_cleanup)
+    
     try:
+        logger.info("Personal AI Assistant 서버 시작")
         asyncio.run(_run())
     except KeyboardInterrupt:
-        pass
+        logger.info("KeyboardInterrupt 수신. 서버를 종료합니다.")
+    except SystemExit:
+        logger.info("시스템 종료 요청. 서버를 종료합니다.")
+    except Exception as e:
+        logger.error(f"서버 실행 중 예상치 못한 오류: {e}")
+    finally:
+        logger.info("Personal AI Assistant 서버 종료 완료")
 
 
 if __name__ == "__main__":
