@@ -1,13 +1,17 @@
 """
-MCP 시스템 통합 모듈
+MCP 시스템 통합 모듈 (에이전틱 AI 업그레이드)
 
 AI 엔진과 MCP 도구들을 통합하여 실제 작업을 수행할 수 있도록 하는 모듈입니다.
+진정한 에이전틱 AI ReAct 엔진을 사용하면서 기존 인터페이스와의 호환성을 유지합니다.
 """
 
 import asyncio
 import os
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..integration.legacy_adapter import LegacyMCPAdapter
 from pathlib import Path
 import unicodedata
 import re
@@ -22,11 +26,18 @@ from .protocol import MCPMessage, MCPRequest, MCPResponse
 from ..config import get_settings
 from ..utils.logger import get_logger
 
+# 새로운 에이전틱 AI 시스템 import
+from ..integration.legacy_adapter import LegacyMCPAdapter
+
 logger = get_logger(__name__)
 
 
 class MCPIntegration:
-    """MCP 시스템과 AI 엔진을 통합하는 클래스"""
+    """
+    MCP 시스템과 AI 엔진을 통합하는 클래스 (에이전틱 AI 업그레이드)
+    
+    기존 인터페이스를 완전히 유지하면서 내부적으로는 진정한 에이전틱 AI를 사용합니다.
+    """
     
     def __init__(self):
         self.config = get_settings()
@@ -35,18 +46,44 @@ class MCPIntegration:
         self.llm_provider = GeminiProvider()
         
         self.prompt_manager = PromptManager()
+        
+        # 기존 decision_engine 유지 (하위 호환성)
         self.decision_engine = AgenticDecisionEngine(
             llm_provider=self.llm_provider,
             prompt_manager=self.prompt_manager
         )
+        
         self.tool_registry = ToolRegistry()
         self.tool_executor = ToolExecutor(self.tool_registry)
+        
+        # 새로운 에이전틱 AI 어댑터 초기화
+        self.agentic_adapter: Optional['LegacyMCPAdapter'] = None  # 지연 초기화
+        
+        # 에이전틱 모드 설정 (환경변수로 제어 가능)
+        self.agentic_enabled = os.getenv("PAI_AGENTIC_ENABLED", "true").lower() == "true"
+        
+        logger.info(f"MCP 통합 초기화 (에이전틱 모드: {'활성화' if self.agentic_enabled else '비활성화'})")
+    
+    async def _ensure_agentic_adapter(self):
+        """에이전틱 어댑터 지연 초기화"""
+        if self.agentic_adapter is None:
+            from ..integration.legacy_adapter import LegacyMCPAdapter
+            self.agentic_adapter = LegacyMCPAdapter(
+                llm_provider=self.llm_provider,
+                tool_registry=self.tool_registry,
+                tool_executor=self.tool_executor,
+                prompt_manager=self.prompt_manager
+            )
+            await self.agentic_adapter.initialize()
         
     async def initialize(self):
         """MCP 시스템 초기화"""
         logger.info("MCP 시스템 초기화 중...")
 
-        # LLM Provider 초기화 (실패 시 예외)
+        # 에이전틱 어댑터 초기화 (기존 초기화 로직 포함)
+        await self._ensure_agentic_adapter()
+        
+        # 기존 호환성을 위해 기본 초기화도 수행
         ok = await self.llm_provider.initialize()
         if not ok or not self.llm_provider.is_available():
             raise RuntimeError(
@@ -69,7 +106,20 @@ class MCPIntegration:
         discovered_count = await self.tool_registry.discover_tools(package_path)
         logger.info(f"발견된 도구 수: {discovered_count} (패키지: {package_path})")
 
-        # 2) Apple MCP 도구 수동 등록 (생성자 주입 필요)
+        # 2) 시스템 시간 도구 수동 등록
+        try:
+            from ..tools.system_time_tool import create_system_time_tool
+            system_time_tool = create_system_time_tool()
+            await system_time_tool.initialize()
+            ok = await self.tool_registry.register_tool_instance(system_time_tool)
+            if ok:
+                logger.info("시스템 시간 도구 등록 완료")
+            else:
+                logger.warning("시스템 시간 도구 등록 실패")
+        except Exception as e:
+            logger.warning(f"시스템 시간 도구 등록 건너뜀: {e}")
+
+        # 3) Apple MCP 도구 수동 등록 (생성자 주입 필요)
         try:
             from .apple_tools import register_apple_tools
             from .apple_client import AppleAppsManager
@@ -96,11 +146,26 @@ class MCPIntegration:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        """하위 호환용: 상세 실행 결과에서 텍스트만 반환"""
-        detailed = await self.process_user_request_detailed(
-            user_input, user_id=user_id, conversation_history=conversation_history
-        )
-        return detailed.get("text", "")
+        """
+        사용자 요청 처리 (기존 인터페이스 유지, 에이전틱 AI 업그레이드)
+        
+        기존 인터페이스를 완전히 유지하면서 내부적으로는 새로운 에이전틱 AI를 사용합니다.
+        """
+        if self.agentic_enabled:
+            # 새로운 에이전틱 AI 시스템 사용
+            await self._ensure_agentic_adapter()
+            assert self.agentic_adapter is not None  # 타입 체커를 위한 assertion
+            return await self.agentic_adapter.process_user_request(
+                user_input=user_input,
+                user_id=user_id,
+                conversation_history=conversation_history
+            )
+        else:
+            # 기존 방식 (레거시 모드)
+            detailed = await self._process_user_request_legacy(
+                user_input, user_id=user_id, conversation_history=conversation_history
+            )
+            return detailed.get("text", "")
 
     async def process_user_request_detailed(
         self,
@@ -108,7 +173,33 @@ class MCPIntegration:
         user_id: str = "default",
         conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """사용자 요청을 처리하여 텍스트와 실행 메타데이터를 함께 반환"""
+        """
+        사용자 요청 처리 (상세 결과 반환, 에이전틱 AI 업그레이드)
+        
+        기존 인터페이스를 완전히 유지하면서 내부적으로는 새로운 에이전틱 AI를 사용합니다.
+        """
+        if self.agentic_enabled:
+            # 새로운 에이전틱 AI 시스템 사용
+            await self._ensure_agentic_adapter()
+            assert self.agentic_adapter is not None  # 타입 체커를 위한 assertion
+            return await self.agentic_adapter.process_user_request_detailed(
+                user_input=user_input,
+                user_id=user_id,
+                conversation_history=conversation_history
+            )
+        else:
+            # 기존 방식 (레거시 모드)
+            return await self._process_user_request_legacy(
+                user_input, user_id=user_id, conversation_history=conversation_history
+            )
+    
+    async def _process_user_request_legacy(
+        self,
+        user_input: str,
+        user_id: str = "default",
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """기존 처리 방식 (레거시 모드용)"""
         try:
             logger.info(f"사용자 요청 처리 시작: {user_input}")
 
@@ -161,58 +252,16 @@ class MCPIntegration:
 
             plan_result = await self._execute_plan(decision, user_input)
             return plan_result
-
-            # 3-b) 실패 시 self-repair 루프 (에이전틱 재시도)
-            attempts = int(os.getenv("PAI_SELF_REPAIR_ATTEMPTS", "2"))
-            retry_count = 0
-            while (not execution_result.result.is_success) and retry_count < attempts:
-                retry_count += 1
-                try:
-                    repaired = await self._self_repair_parameters(tool_name, parameters, execution_result.result.error_message)
-                    if repaired and isinstance(repaired, dict):
-                        repaired = self._normalize_parameters(tool_name, repaired)
-                        execution_result = await self.tool_executor.execute_tool(tool_name=tool_name, parameters=repaired)
-                        if execution_result.result.is_success:
-                            parameters = repaired
-                            break
-                        else:
-                            parameters = repaired  # 다음 루프에 전달
-                    else:
-                        break
-                except Exception:
-                    break
-
-            # 4) 요약 + 메타
-            if execution_result.result.is_success:
-                logger.info(f"도구 실행 성공: {tool_name}")
-                text = self._summarize_success(tool_name, parameters, execution_result.result.data)
-                return {
-                    "text": text,
-                    "execution": {
-                        "tool_name": tool_name,
-                        "action": action,
-                        "status": "success",
-                        "parameters": parameters,
-                        "result_data": execution_result.result.data,
-                    }
-                }
-            else:
-                logger.error(f"도구 실행 실패: {execution_result.result.error_message}")
-                text = self._summarize_failure(tool_name, parameters, execution_result.result.error_message)
-                return {
-                    "text": text,
-                    "execution": {
-                        "tool_name": tool_name,
-                        "action": action,
-                        "status": "error",
-                        "error": execution_result.result.error_message,
-                        "parameters": parameters,
-                        "result_data": execution_result.result.data if execution_result.result else None,
-                    },
-                }
+            
         except Exception as e:
-            logger.error(f"요청 처리 중 오류: {e}")
-            return {"text": f"❌ 시스템 오류: {str(e)}", "execution": {"status": "error", "error": str(e)}}
+            logger.error(f"레거시 요청 처리 실패: {e}")
+            return {
+                "text": f"요청 처리 중 오류가 발생했습니다: {str(e)}",
+                "execution": {
+                    "status": "error",
+                    "error": str(e)
+                }
+            }
 
     async def _maybe_refine_response(self, user_input: str, draft: str, result_data: Optional[Dict[str, Any]] = None) -> str:
         """환경변수로 제어되는 최종 응답 LLM 리파인 단계 (JSON 강제 없음)."""
@@ -1140,6 +1189,17 @@ class MCPIntegration:
                     pass
 
             # 실행 + 자기교정 재시도
+            # system_time 특별 처리: 파라미터가 비어있으면 기본값 설정
+            if tool_name == "system_time" and (not parameters or not isinstance(parameters, dict)):
+                parameters = {"action": "current", "timezone": "Asia/Seoul"}
+                logger.debug(f"system_time 도구 기본 파라미터 설정: {parameters}")
+            elif tool_name == "system_time" and isinstance(parameters, dict):
+                if "action" not in parameters or not parameters.get("action"):
+                    parameters["action"] = "current"
+                    logger.debug("system_time 도구에 기본 action 'current' 설정")
+                if "timezone" not in parameters:
+                    parameters["timezone"] = "Asia/Seoul"
+            
             exec_result = await self.tool_executor.execute_tool(tool_name=tool_name, parameters=parameters)
             attempts = int(os.getenv("PAI_SELF_REPAIR_ATTEMPTS", "2"))
             retry_count = 0
@@ -1307,237 +1367,11 @@ class MCPIntegration:
             return iso_str
 
     def _normalize_parameters(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """도구 실행 전 파라미터 정규화
+        """파라미터 정규화 비활성화
 
-        - calculator: {"expression": "2 + 3"} → {operation: "+", a: 2, b: 3}
-        추가적인 도구별 맵핑이 필요하면 이곳에 확장합니다.
+        순수 LLM 결정에 따르기 위해, 도구별 휴리스틱/키워드 기반 보정은 수행하지 않습니다.
         """
-        try:
-            mode = os.getenv("PAI_PARAM_NORMALIZATION_MODE", "minimal").lower()
-
-            # Always canonicalize 'action' for known tools
-            if isinstance(params, dict) and "action" in params and isinstance(params["action"], str):
-                a = params["action"].strip().lower()
-                def _canon(syn: dict[str, set[str]], a: str) -> str:
-                    for key, words in syn.items():
-                        if a in {w.lower() for w in words}:
-                            return key
-                    return params["action"]
-                if tool_name == "notion_todo":
-                    params["action"] = _canon({
-                        "create": {"create", "추가", "생성", "등록", "만들어", "만들다", "할일 추가"},
-                        "update": {"update", "수정", "변경", "편집"},
-                        "delete": {"delete", "삭제", "제거"},
-                        "get": {"get", "조회", "확인", "보기"},
-                        "list": {"list", "목록", "리스트"},
-                        "complete": {"complete", "완료", "끝", "할일완료", "할일 완료", "완료로", "완료로바꿔줘", "완료로 바꿔줘"},
-                    }, a)
-                elif tool_name == "notion_calendar":
-                    params["action"] = _canon({
-                        "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
-                        "update": {"update", "수정", "변경", "편집", "일정 수정"},
-                        "delete": {"delete", "삭제", "제거", "일정 삭제"},
-                        "get": {"get", "조회", "확인", "보기"},
-                        "list": {"list", "목록", "리스트"},
-                    }, a)
-                elif tool_name == "apple_notes":
-                    params["action"] = _canon({
-                        "create": {"create", "add", "make", "메모 생성", "생성", "추가", "작성"},
-                        "search": {"search", "find", "검색"},
-                        "update": {"update", "수정", "편집"},
-                        "delete": {"delete", "remove", "삭제"},
-                        "read": {"read", "열람", "읽기"},
-                    }, a)
-                elif tool_name == "filesystem":
-                    params["action"] = _canon({
-                        "list": {"list", "목록", "리스트"},
-                        "stat": {"stat", "정보", "상세", "상세보기"},
-                        "move": {"move", "이동", "옮겨", "옮기기", "파일 이동", "폴더 이동", "파일/폴더 이동"},
-                        "copy": {"copy", "복사"},
-                        "mkdir": {"mkdir", "디렉토리 생성", "폴더 생성", "폴더 만들기", "디렉토리 만들기"},
-                        "trash_delete": {"trash_delete", "휴지통", "휴지통으로"},
-                        "delete": {"delete", "삭제", "영구 삭제"},
-                    }, a)
-
-            if mode == "off":
-                return params
-            if tool_name == "calculator" and isinstance(params, dict):
-                # minimal: calculator는 보정하지 않음 (LLM 생성 그대로)
-                if mode == "full":
-                    expr = params.get("expression")
-                    if isinstance(expr, str):
-                        import re
-                        m = re.search(r"(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)", expr)
-                        if m:
-                            a = float(m.group(1))
-                            op = m.group(2)
-                            b = float(m.group(3))
-                            return {"operation": op, "a": a, "b": b, **{k: v for k, v in params.items() if k != "expression"}}
-            elif tool_name == "apple_notes" and isinstance(params, dict):
-                if mode == "full":
-                    raw_action = str(params.get("action", "")).strip().lower()
-                    create_words = ["create", "add", "make", "메모 생성", "생성", "추가", "작성"]
-                    search_words = ["search", "find", "검색"]
-                    update_words = ["update", "수정", "편집"]
-                    delete_words = ["delete", "remove", "삭제"]
-
-                    def match_any(words: list[str]) -> bool:
-                        return any(w.lower() in raw_action for w in words)
-
-                    normalized = None
-                    if raw_action:
-                        if match_any(update_words):
-                            normalized = "update"
-                        elif match_any(search_words):
-                            normalized = "search"
-                        elif match_any(delete_words):
-                            normalized = "delete"
-                        elif match_any(create_words):
-                            normalized = "create"
-                    if not normalized:
-                        if "target_title" in params or "note_id" in params:
-                            normalized = "update"
-                        else:
-                            normalized = "create"
-                    params["action"] = normalized
-                # minimal: 기본값/폴더만 보정
-                if "folder" not in params:
-                    params["folder"] = "Notes"
-                if not params.get("title") and params.get("content"):
-                    params["title"] = str(params.get("content"))[:30] or "새 메모"
-                return params
-            elif tool_name == "echo" and isinstance(params, dict):
-                # flash 계열이 'text'로 내려줄 수 있어 'message'로 보정
-                if "message" not in params:
-                    if "text" in params:
-                        params["message"] = params.pop("text")
-                    elif "content" in params:
-                        params["message"] = params.pop("content")
-                # 여분 키 제거는 도구가 무시하지만, 명시적으로 유지/정리 가능
-                return params
-            elif tool_name == "notion_todo" and isinstance(params, dict):
-                if mode == "full":
-                    # 액션 표준화
-                    action = params.get("action", "create")
-                    synonyms = {
-                        "create": {"create", "추가", "생성", "등록", "만들어", "만들다", "할일 추가"},
-                        "update": {"update", "수정", "변경", "편집"},
-                        "delete": {"delete", "삭제", "제거"},
-                        "get": {"get", "조회", "확인", "보기"},
-                        "list": {"list", "목록", "리스트"},
-                        "complete": {"complete", "완료", "끝"}
-                    }
-                    normalized = "create"
-                    for key, words in synonyms.items():
-                        if str(action).lower() in [w.lower() for w in words]:
-                            normalized = key
-                            break
-                    params["action"] = normalized
-
-                    # 우선순위 표준화
-                    pr = params.get("priority")
-                    if isinstance(pr, str) and pr.strip():
-                        pr_l = pr.strip().lower()
-                        high_set = {"high", "높음", "높다", "상", "urgent", "중요", "매우높음", "very high", "긴급"}
-                        medium_set = {"medium", "normal", "중간", "보통", "일반", "중"}
-                        low_set = {"low", "낮음", "낮다", "하", "minor", "low priority", "low-priority"}
-                        if pr_l in [s.lower() for s in high_set]:
-                            params["priority"] = "높음"
-                        elif pr_l in [s.lower() for s in medium_set]:
-                            params["priority"] = "중간"
-                        elif pr_l in [s.lower() for s in low_set]:
-                            params["priority"] = "낮음"
-                        else:
-                            if any(k in pr_l for k in ["very", "매우", "high", "urgent", "중요"]):
-                                params["priority"] = "높음"
-                            elif any(k in pr_l for k in ["low", "낮"]):
-                                params["priority"] = "낮음"
-                            else:
-                                params["priority"] = "중간"
-                # due_date ISO 보정(로컬 타임존 KST +09:00 적용)
-                dd = params.get("due_date")
-                if isinstance(dd, str) and ('Z' not in dd and '+' not in dd and '-' not in dd[10:]):
-                    # naive ISO-like → KST(+09:00)로 간주
-                    if len(dd) >= 16 and 'T' in dd:
-                        params["due_date"] = dd + "+09:00"
-                return params
-            elif tool_name == "notion_calendar" and isinstance(params, dict):
-                # 날짜 키 표준화
-                if "start_date" not in params:
-                    if "date" in params:
-                        params["start_date"] = params.pop("date")
-                    elif "start" in params:
-                        params["start_date"] = params.pop("start")
-                # date + time → start_date 결합
-                start_date = params.get("start_date")
-                time_part = params.get("time")
-                if isinstance(start_date, str) and isinstance(time_part, str):
-                    from datetime import datetime
-                    from zoneinfo import ZoneInfo
-                    from ..config import get_settings
-                    tz = ZoneInfo(get_settings().default_timezone)
-                    if 'T' not in start_date:
-                        try:
-                            naive = datetime.fromisoformat(f"{start_date}T{time_part}")
-                            params["start_date"] = naive.replace(tzinfo=tz).isoformat()
-                        except Exception:
-                            params["start_date"] = f"{start_date}T{time_part}+09:00"
-                    params.pop("time", None)
-                # ISO 보정 (기본 시간대)
-                for key in ("start_date", "end_date"):
-                    v = params.get(key)
-                    if isinstance(v, str) and ('Z' not in v and '+' not in v and '-' not in v[10:]):
-                        if len(v) >= 16 and 'T' in v:
-                            params[key] = v + "+09:00"
-                return params
-            elif tool_name == "apple_calendar" and isinstance(params, dict):
-                if mode == "full":
-                    action = params.get("action", "create")
-                    synonyms = {
-                        "create": {"create", "추가", "생성", "등록", "일정 추가", "일정 생성"},
-                        "search": {"search", "검색", "찾기"},
-                        "list": {"list", "목록", "조회"},
-                        "open": {"open", "열기"}
-                    }
-                    normalized = "create"
-                    for key, words in synonyms.items():
-                        if str(action).lower() in [w.lower() for w in words]:
-                            normalized = key
-                            break
-                    params["action"] = normalized
-                return params
-            elif tool_name == "filesystem" and isinstance(params, dict):
-                # 의미 경로를 실제 경로로 보정 (Desktop/Documents/Downloads 별칭 지원)
-                def _map_root(seg: str) -> Optional[Path]:
-                    s = (seg or "").strip().lower()
-                    home = Path.home()
-                    if s in {"desktop", "바탕화면"}: return home / "Desktop"
-                    if s in {"documents", "문서", "도큐먼트"}: return home / "Documents"
-                    if s in {"downloads", "다운로드"}: return home / "Downloads"
-                    return None
-                def _semantic_to_path(text: Optional[str]) -> Optional[str]:
-                    if not text or not isinstance(text, str):
-                        return None
-                    raw = text.replace("\\", "/").strip().strip("\"")
-                    parts = [p for p in raw.split('/') if p]
-                    if not parts:
-                        return None
-                    root = _map_root(parts[0]) or (Path.home() / "Desktop")
-                    sub = parts[1:] if _map_root(parts[0]) else parts
-                    p = root
-                    for seg in sub:
-                        p = p / seg
-                    return str(p)
-                # path/src/dst 보정
-                for key in ("path", "src", "dst"):
-                    if key in params and isinstance(params[key], str):
-                        mapped = _semantic_to_path(params[key])
-                        if mapped:
-                            params[key] = mapped
-                return params
-            return params
-        except Exception:
-            return params
+        return params
 
     async def _self_repair_parameters(self, tool_name: str, params: Dict[str, Any], error_message: Optional[str]) -> Optional[Dict[str, Any]]:
         """파라미터 자기교정 — LLM JSON 강제 사용 제거, 도메인별 휴리스틱 적용.

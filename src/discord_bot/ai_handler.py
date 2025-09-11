@@ -290,12 +290,82 @@ class AIMessageHandler:
             except Exception:
                 pass
             system_notice = None
-            if exec_info and isinstance(exec_info, dict) and exec_info.get("status") in {"success", "error"}:
-                tool = exec_info.get("tool_name") or "tool"
-                action = exec_info.get("action") or "execute"
-                status = exec_info.get("status")
-                status_text = "완료" if status == "success" else "실패"
-                system_notice = f"시스템 안내: {tool} ({action}) 실행 {status_text}"
+            logger.info("=== SYSTEM NOTICE 디버깅 시작 ===")
+            logger.info(f"exec_info 타입: {type(exec_info)}")
+            logger.info(f"exec_info 내용: {exec_info}")
+            
+            # MCP 도구 사용 알림: '성공'이며 실제 도구 호출이 있었던 경우에만 전송
+            if exec_info and isinstance(exec_info, dict) and exec_info.get("status") == "success":
+                logger.info("SUCCESS 조건 만족됨, system_notice 생성 시도")
+                
+                # 디버그: exec_info 내용 로깅
+                logger.debug(f"System notice 생성 중: exec_info={exec_info}")
+                
+                total_calls = exec_info.get("total_tool_calls") or exec_info.get("total_calls") or 0
+                success_calls = exec_info.get("successful_tool_calls") or exec_info.get("successful_calls") or 0
+                tool = exec_info.get("tool_name")
+                tools_used = exec_info.get("tools_used") or []
+                
+                logger.info(f"도구 정보: tool={tool}, tools_used={tools_used}, total_calls={total_calls}, success_calls={success_calls}")
+                
+                # 실제 사용된 도구들 목록 생성
+                if isinstance(tools_used, (list, tuple)) and len(tools_used) > 0:
+                    logger.info(f"tools_used 발견: {tools_used}")
+                    # system_time 도구는 시스템 알림에서 제외 (사용자에게 불필요)
+                    meaningful_tools = [t for t in tools_used if t != 'system_time']
+                    
+                    if meaningful_tools:
+                        logger.info(f"meaningful_tools: {meaningful_tools}")
+                        if len(meaningful_tools) == 1:
+                            # 단일 도구 사용 시 더 정확한 action 정보 표시
+                            tool_name = meaningful_tools[0]
+                            # scratchpad_summary에서 실제 action 추출 시도
+                            action = "실행"
+                            try:
+                                summary = exec_info.get("scratchpad_summary", "")
+                                if "action" in str(summary).lower():
+                                    # action 정보가 있으면 추출
+                                    import re
+                                    # notion_todo 사용이라는 표현에서 실제 action 추출
+                                    if tool_name == "notion_todo":
+                                        if "create" in summary.lower() or "추가" in summary or "생성" in summary:
+                                            action = "create"
+                                        elif "update" in summary.lower() or "수정" in summary or "변경" in summary:
+                                            action = "update" 
+                                        elif "delete" in summary.lower() or "삭제" in summary:
+                                            action = "delete"
+                                        elif "complete" in summary.lower() or "완료" in summary:
+                                            action = "complete"
+                                        elif "list" in summary.lower() or "조회" in summary or "목록" in summary:
+                                            action = "list"
+                            except Exception:
+                                pass
+                            
+                            system_notice = f"시스템 안내: {tool_name} ({action}) 실행 완료"
+                            logger.info(f"단일 도구 알림 생성: {system_notice}")
+                        else:
+                            # 여러 도구 사용 시 상세 알림 표시
+                            tools_str = ", ".join(meaningful_tools)
+                            system_notice = f"시스템 안내: {len(meaningful_tools)}개 도구 실행 완료 ({tools_str})"
+                            logger.info(f"복수 도구 알림 생성: {system_notice}")
+                    else:
+                        logger.info("meaningful_tools가 비어있음 (모두 system_time)")
+                        
+                elif tool and tool != 'system_time':
+                    logger.info(f"단일 tool 발견: {tool}")
+                    # 단일 도구 사용인 경우
+                    action = exec_info.get("action") or "execute"
+                    system_notice = f"시스템 안내: {tool} ({action}) 실행 완료"
+                    logger.info(f"단일 tool 알림 생성: {system_notice}")
+                else:
+                    logger.info(f"알림 생성 조건 불만족: tool={tool}, tools_used={tools_used}")
+                
+                # 최종 system_notice 결과 로깅
+                logger.info(f"System notice 최종 결과: '{system_notice}'")
+            else:
+                logger.info(f"SUCCESS 조건 불만족: exec_info={bool(exec_info)}, is_dict={isinstance(exec_info, dict)}, status={exec_info.get('status') if isinstance(exec_info, dict) else 'N/A'}")
+            
+            logger.info("=== SYSTEM NOTICE 디버깅 종료 ===")
 
             meta = {
                 "original_message": user_message,

@@ -315,8 +315,18 @@ class BaseTool(ABC):
                     error_message="도구가 초기화되지 않았습니다"
                 )
             
-            # 매개변수 검증
-            validation_errors = self.validate_parameters(parameters)
+            # 기본값 주입(메타데이터 default) 후 검증
+            # None 방지 및 얕은 복사
+            full_parameters: Dict[str, Any] = dict(parameters or {})
+            try:
+                for p in self.metadata.parameters:
+                    if p.required and p.default is not None and p.name not in full_parameters:
+                        full_parameters[p.name] = p.default
+            except Exception:
+                # 메타데이터 접근 실패 시 원본 파라미터로 진행
+                full_parameters = dict(parameters or {})
+
+            validation_errors = self.validate_parameters(full_parameters)
             if validation_errors:
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
@@ -324,7 +334,7 @@ class BaseTool(ABC):
                 )
             
             # 실행
-            result = await self.execute(parameters)
+            result = await self.execute(full_parameters)
             
             # 실행 시간 계산
             execution_time = (datetime.now() - start_time).total_seconds()

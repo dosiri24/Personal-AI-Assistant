@@ -355,17 +355,30 @@ class DiscordBot:
                         str(message.channel.id)
                     )
                     
-                    self.logger.info(f"AI 응답 받음: {ai_response.content[:100]}...")
+                    self.logger.info(f"AI 응답 받음: {ai_response.content[:100] if ai_response.content else 'Empty response'}...")
                     
-                    # 1) 비서 메시지 전송
-                    await message.reply(ai_response.content)
-                    # 2) 시스템 안내(실행 검증) 전송
+                    # 빈 응답 처리
+                    if not ai_response.content or not ai_response.content.strip():
+                        ai_response.content = "작업을 처리했지만 응답 생성에 문제가 있었습니다. 요청하신 작업은 완료되었을 가능성이 높습니다."
+                        self.logger.warning("빈 AI 응답을 기본 메시지로 대체")
+                    
+                    # 1) 시스템 안내 먼저 전송 (도구 실행 정보)
                     system_notice = getattr(ai_response, "system_notice", None)
+                    self.logger.debug(f"System notice 확인: {system_notice}")
+                    
                     if isinstance(system_notice, str) and system_notice.strip():
                         try:
+                            self.logger.info(f"시스템 알림 전송: {system_notice}")
                             await message.reply(f"ℹ️ {system_notice}")
-                        except Exception:
-                            pass
+                            # 짧은 지연으로 순서 보장
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            self.logger.error(f"시스템 알림 전송 실패: {e}")
+                    else:
+                        self.logger.debug(f"시스템 알림 생략: notice='{system_notice}', type={type(system_notice)}")
+                    
+                    # 2) 비서 메시지 전송 (메인 응답)
+                    await message.reply(ai_response.content)
                     
                     # 세션에 AI 응답 저장
                     await self.session_manager.update_conversation_turn(

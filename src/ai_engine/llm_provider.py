@@ -22,9 +22,7 @@ try:
         HarmCategory = None  # type: ignore
         HarmBlockThreshold = None  # type: ignore
     GENAI_AVAILABLE = True
-    print("Google Generative AI 패키지 로드 성공")
 except ImportError as e:
-    print(f"Google Generative AI 패키지 import 실패 (Mock 모드로 동작): {e}")
     GENAI_AVAILABLE = False
     genai = None
 
@@ -139,17 +137,16 @@ class GeminiProvider(LLMProvider):
                     logger.error("genai.configure 메서드를 찾을 수 없습니다.")
                     return False
                 
-                # Safety: 가능한 경우 모든 카테고리 BLOCK_NONE으로 설정 (빈 응답/차단 완화)
+                # Safety: 문자열 방식으로 안전 설정 (더 호환성 좋음)
                 try:
-                    if HarmCategory and HarmBlockThreshold:
-                        self.safety_settings = [
-                            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
-                            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
-                            {"category": HarmCategory.HARM_CATEGORY_SEXUAL, "threshold": HarmBlockThreshold.BLOCK_NONE},
-                            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS, "threshold": HarmBlockThreshold.BLOCK_NONE},
-                            {"category": HarmCategory.HARM_CATEGORY_UNSPECIFIED, "threshold": HarmBlockThreshold.BLOCK_NONE},
-                        ]
-                except Exception:
+                    self.safety_settings = [
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                    ]
+                except Exception as e:
+                    logger.warning(f"안전 설정 실패: {e}")
                     self.safety_settings = None
 
                 # 모델 생성
@@ -192,19 +189,13 @@ class GeminiProvider(LLMProvider):
             # 메시지 변환
             prompt = self._convert_messages_to_prompt(messages)
             
-            # 생성 설정 (기본은 자연어 텍스트 응답)
+            # 생성 설정 (독립 테스트와 동일하게 최소한만 설정)
             config_dict = {
                 'temperature': temperature,
-                # 선택·추출 과제의 안정성을 높이기 위한 기본 설정
-                'candidate_count': 1,
-                'top_k': 1,
-                'top_p': 0.0,
-                # 기본적으로 자연어 텍스트를 기대 (호출부에서 필요 시 override)
-                'response_mime_type': 'text/plain',
                 **kwargs
             }
             
-            # 출력 토큰 상한: 명시가 없으면 설정값(ai_max_tokens)으로 크게 설정
+            # 출력 토큰 상한: 독립 테스트와 동일하게 충분히 크게 설정
             try:
                 default_max = getattr(self.config, 'ai_max_tokens', None)
             except Exception:
@@ -219,46 +210,24 @@ class GeminiProvider(LLMProvider):
             except Exception:
                 pass
             def _do_generate() -> Any:
-                # safety_settings는 모델 생성 시에도 반영되지만, 일부 버전에선 호출 시 지정이 필요할 수 있음
+                # 모델 생성 시 이미 안전 설정을 적용했으므로 호출 시에는 제거
                 try:
                     return self.model.generate_content(  # type: ignore
                         prompt,
                         generation_config=config_dict,
-                        safety_settings=self.safety_settings if self.safety_settings is not None else None,
                     )
-                except TypeError:
-                    # safety_settings 파라미터 미지원 버전 폴백
-                    return self.model.generate_content(prompt, generation_config=config_dict)  # type: ignore
+                except Exception as e:
+                    # 혹시 모를 fallback
+                    return self.model.generate_content(prompt)  # type: ignore
 
             if hasattr(self.model, 'generate_content'):
                 response = await asyncio.to_thread(_do_generate)
 
-                # 안전한 텍스트 추출
+                # 독립 테스트와 동일한 단순한 텍스트 추출
                 content = ""
                 try:
-                    if hasattr(response, 'text') and response.text:
-                        content = response.text
-                    elif hasattr(response, 'candidates') and response.candidates:
-                        # 후보들의 텍스트를 이어붙이거나 첫 후보를 사용
-                        parts = []
-                        for cand in response.candidates:
-                            # 일부 버전은 cand.content.parts에 텍스트가 들어 있음
-                            txt = getattr(cand, 'text', None)
-                            if txt:
-                                parts.append(txt)
-                                continue
-                            content_obj = getattr(cand, 'content', None)
-                            if content_obj is not None:
-                                maybe_text = getattr(content_obj, 'text', None)
-                                if maybe_text:
-                                    parts.append(maybe_text)
-                                    continue
-                            # 최후 보루: 문자열화
-                            parts.append(str(cand))
-                        content = "\n".join([p for p in parts if p])
-                    else:
-                        # 사용 가능한 텍스트가 없는 경우
-                        content = ""
+                    # 가장 직접적인 방법부터 시도
+                    content = response.text
                 except Exception as ex:
                     logger.warning(f"Gemini 응답 텍스트 추출 실패: {ex}")
                     content = ""
@@ -364,7 +333,18 @@ class GeminiProvider(LLMProvider):
             role = msg.role.lower()
             content = msg.content
             
-            if role == "system":
+            # 이미 role prefix가 있는지 확인
+            content_lower = content.lower().strip()
+            has_role_prefix = (
+                content_lower.startswith("사용자:") or 
+                content_lower.startswith("시스템:") or 
+                content_lower.startswith("어시스턴트:")
+            )
+            
+            if has_role_prefix:
+                # 이미 role prefix가 있으면 그대로 사용
+                prompt_parts.append(content)
+            elif role == "system":
                 prompt_parts.append(f"시스템: {content}")
             elif role == "user":
                 prompt_parts.append(f"사용자: {content}")

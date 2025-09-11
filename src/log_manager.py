@@ -25,48 +25,81 @@ class LogManager:
     
     def rotate_logs(self, max_size_mb: int = 50, keep_days: int = 30):
         """로그 로테이션 수행"""
-        logger.info("로그 로테이션 시작")
+        logger.info(f"로그 로테이션 시작: 최대크기={max_size_mb}MB, 보관기간={keep_days}일")
+        rotation_start = datetime.now()
+        
+        rotated_count = 0
+        total_size_before = 0
+        total_size_after = 0
         
         for log_file in self.log_files:
             log_path = self.logs_dir / log_file
             
             if not log_path.exists():
+                logger.debug(f"로그 파일 없음: {log_file}")
                 continue
             
             # 파일 크기 확인
             size_mb = log_path.stat().st_size / (1024 * 1024)
+            total_size_before += size_mb
+            
+            logger.debug(f"로그 파일 검사: {log_file} ({size_mb:.2f}MB)")
             
             if size_mb > max_size_mb:
+                logger.info(f"로그 파일 로테이션 필요: {log_file} ({size_mb:.2f}MB > {max_size_mb}MB)")
                 self._rotate_file(log_path)
+                rotated_count += 1
+                
+                # 로테이션 후 크기 재계산
+                if log_path.exists():
+                    new_size = log_path.stat().st_size / (1024 * 1024)
+                    total_size_after += new_size
+                    logger.debug(f"로테이션 후 크기: {log_file} ({new_size:.2f}MB)")
+            else:
+                total_size_after += size_mb
         
         # 오래된 로그 파일 정리
-        self._cleanup_old_logs(keep_days)
+        cleaned_count = self._cleanup_old_logs(keep_days)
         
-        logger.info("로그 로테이션 완료")
+        rotation_time = (datetime.now() - rotation_start).total_seconds()
+        logger.info(f"로그 로테이션 완료: 로테이션={rotated_count}개, 정리={cleaned_count}개, "
+                   f"크기변화={total_size_before:.2f}MB→{total_size_after:.2f}MB, "
+                   f"소요시간={rotation_time:.2f}초")
     
     def _rotate_file(self, log_path: Path):
         """개별 로그 파일 로테이션"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        original_size = log_path.stat().st_size
         
         # 압축된 백업 파일 생성
         backup_path = log_path.parent / f"{log_path.stem}_{timestamp}.log.gz"
         
         try:
+            logger.debug(f"로그 파일 압축 시작: {log_path} ({original_size} bytes)")
+            
             with open(log_path, 'rb') as f_in:
                 with gzip.open(backup_path, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
             
+            # 압축 결과 확인
+            compressed_size = backup_path.stat().st_size
+            compression_ratio = (1 - compressed_size / original_size) * 100
+            
             # 원본 파일 비우기
             log_path.write_text("")
             
-            logger.info(f"로그 파일 로테이션: {log_path} -> {backup_path}")
+            logger.info(f"로그 파일 로테이션 완료: {log_path} → {backup_path} "
+                       f"(압축률: {compression_ratio:.1f}%)")
             
         except Exception as e:
             logger.error(f"로그 파일 로테이션 실패 {log_path}: {e}")
     
-    def _cleanup_old_logs(self, keep_days: int):
+    def _cleanup_old_logs(self, keep_days: int) -> int:
         """오래된 로그 파일 정리"""
+        logger.debug(f"오래된 로그 파일 정리 시작: {keep_days}일 이전")
         cutoff_date = datetime.now() - timedelta(days=keep_days)
+        cleaned_count = 0
+        total_freed_space = 0
         
         # .gz 파일들 확인
         for gz_file in self.logs_dir.glob("*.log.gz"):
@@ -74,18 +107,34 @@ class LogManager:
                 file_time = datetime.fromtimestamp(gz_file.stat().st_mtime)
                 
                 if file_time < cutoff_date:
+                    file_size = gz_file.stat().st_size
                     gz_file.unlink()
-                    logger.info(f"오래된 로그 파일 삭제: {gz_file}")
+                    
+                    cleaned_count += 1
+                    total_freed_space += file_size
+                    logger.debug(f"오래된 로그 파일 삭제: {gz_file} ({file_size} bytes)")
                     
             except Exception as e:
-                logger.warning(f"로그 파일 정리 실패 {gz_file}: {e}")
+                logger.error(f"로그 파일 삭제 실패 {gz_file}: {e}")
+        
+        if cleaned_count > 0:
+            freed_mb = total_freed_space / (1024 * 1024)
+            logger.info(f"오래된 로그 정리 완료: {cleaned_count}개 파일, {freed_mb:.2f}MB 확보")
+        else:
+            logger.debug("정리할 오래된 로그 파일 없음")
+            
+        return cleaned_count
     
     def get_log_stats(self) -> dict:
         """로그 파일 통계 반환"""
+        logger.debug("로그 파일 통계 수집 중...")
+        
         stats = {
             'total_files': 0,
             'total_size_mb': 0,
-            'files': {}
+            'files': {},
+            'compressed_files': 0,
+            'compressed_size_mb': 0
         }
         
         # 현재 로그 파일들

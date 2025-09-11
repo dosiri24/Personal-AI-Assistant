@@ -150,13 +150,18 @@ class MemoryManager:
         Returns:
             memory_id: 생성된 기억 ID
         """
+        logger.debug(f"기억 추가 시작: ID={memory.id}, 타입={memory.memory_type.value}")
+        
         try:
             # 자동 중요도 계산
             if memory.metadata.importance_score == 0.0:
+                logger.debug("자동 중요도 계산 중...")
                 memory.metadata.importance_score = await self._calculate_importance(memory)
                 memory.metadata.importance_level = self._score_to_level(
                     memory.metadata.importance_score
                 )
+                logger.debug(f"중요도 계산 완료: 점수={memory.metadata.importance_score:.2f}, "
+                           f"레벨={memory.metadata.importance_level.value}")
             
             # VectorDocument로 변환
             vector_doc = self._memory_to_vector_doc(memory)
@@ -166,10 +171,14 @@ class MemoryManager:
                 memory.memory_type, 
                 CollectionType.ACTION_MEMORY
             )
+            logger.debug(f"벡터 스토어에 추가: 컬렉션={collection_type.value}")
             success = await self.vector_store.add_document(collection_type, vector_doc)
             
             if not success:
+                logger.error(f"벡터 스토어 추가 실패: {memory.id}")
                 raise RuntimeError(f"기억 추가 실패: {memory.id}")
+            
+            logger.info(f"기억 추가 성공: ID={memory.id}, 중요도={memory.metadata.importance_level.value}")
             
             # RAG 엔진에 인덱싱 (일시적으로 비활성화)
             # if self.rag_engine:
@@ -269,16 +278,21 @@ class MemoryManager:
     
     async def get_memory(self, memory_id: str) -> Optional[BaseMemory]:
         """기억 조회"""
+        logger.debug(f"기억 조회 시작: ID={memory_id}")
+        
         # 모든 컬렉션에서 검색
         for collection_type in CollectionType:
             try:
                 doc = await self.vector_store.get_document(collection_type, memory_id)
                 if doc:
-                    return self._vector_doc_to_memory(doc)
+                    memory = self._vector_doc_to_memory(doc)
+                    logger.info(f"기억 조회 성공: ID={memory_id}, 컬렉션={collection_type.value}")
+                    return memory
             except Exception as e:
                 logger.debug(f"컬렉션 {collection_type.value}에서 검색 실패: {e}")
                 continue
         
+        logger.warning(f"기억을 찾을 수 없음: {memory_id}")
         return None
     
     async def update_memory_importance(self, memory_id: str) -> float:
@@ -291,10 +305,16 @@ class MemoryManager:
         Returns:
             새로운 중요도 점수
         """
+        logger.debug(f"기억 중요도 업데이트 시작: ID={memory_id}")
+        
         memory = await self.get_memory(memory_id)
         if not memory:
             logger.warning(f"기억을 찾을 수 없음: {memory_id}")
             return 0.0
+        
+        # 기존 중요도 저장
+        old_score = memory.metadata.importance_score
+        old_level = memory.metadata.importance_level
         
         # 중요도 재계산
         new_score = await self._calculate_importance(memory)
@@ -305,7 +325,8 @@ class MemoryManager:
         # TODO: 실제 업데이트는 VectorStore의 update 메서드 구현 필요
         # 현재는 중요도 계산만 수행
         
-        logger.info(f"기억 중요도 계산: {memory_id} -> {new_score:.3f}")
+        logger.info(f"기억 중요도 업데이트: ID={memory_id}, "
+                   f"{old_score:.3f}({old_level.value}) → {new_score:.3f}({memory.metadata.importance_level.value})")
         return new_score
     
     async def compress_old_memories(self, 
@@ -462,15 +483,20 @@ class MemoryManager:
     
     async def _check_storage_limits(self) -> None:
         """스토리지 한계 체크 및 자동 정리"""
+        logger.debug("스토리지 한계 확인 중...")
         stats = await self.get_statistics()
+        
+        logger.debug(f"현재 활성 기억: {stats.active_memories}/{self.max_active_memories}")
         
         if stats.active_memories > self.max_active_memories:
             # 오래된 기억들 자동 아카이브
             excess = stats.active_memories - self.max_active_memories
-            logger.info(f"스토리지 한계 초과, {excess}개 기억 정리 시작")
+            logger.warning(f"스토리지 한계 초과: {excess}개 기억 정리 필요")
             
             archived = await self.archive_old_memories()
             logger.info(f"자동 정리 완료: {archived}개 아카이브")
+        else:
+            logger.debug("스토리지 한계 내 정상 운영")
     
     async def cleanup_old_memories(self) -> Tuple[int, int]:
         """
@@ -480,15 +506,27 @@ class MemoryManager:
             (압축된 수, 아카이브된 수)
         """
         logger.info("기억 정리 작업 시작")
+        cleanup_start = datetime.now()
         
-        compressed = await self.compress_old_memories()
-        archived = await self.archive_old_memories()
-        
-        # 통계 업데이트
-        await self.update_statistics()
-        
-        logger.info(f"기억 정리 완료: 압축 {compressed}개, 아카이브 {archived}개")
-        return compressed, archived
+        try:
+            compressed = await self.compress_old_memories()
+            logger.info(f"기억 압축 완료: {compressed}개")
+            
+            archived = await self.archive_old_memories()
+            logger.info(f"기억 아카이브 완료: {archived}개")
+            
+            # 통계 업데이트
+            await self.update_statistics()
+            
+            cleanup_time = (datetime.now() - cleanup_start).total_seconds()
+            logger.info(f"기억 정리 완료: 압축={compressed}개, 아카이브={archived}개, "
+                       f"소요시간={cleanup_time:.2f}초")
+            return compressed, archived
+            
+        except Exception as e:
+            cleanup_time = (datetime.now() - cleanup_start).total_seconds()
+            logger.error(f"기억 정리 실패: {e}, 소요시간={cleanup_time:.2f}초")
+            return 0, 0
 
 
 # 유틸리티 함수들
