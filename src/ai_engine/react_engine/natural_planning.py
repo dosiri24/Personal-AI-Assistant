@@ -5,6 +5,7 @@ ReAct 엔진의 자연어 기반 실행 - JSON 구조 강제 없이 LLM의 자�
 """
 
 import asyncio
+import json
 import time
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -85,7 +86,10 @@ class NaturalPlanningExecutor:
         start_time = time.time()
         scratchpad = AgentScratchpad(goal=goal)
         
-        # 🔍 실제 등록된 도구 목록 확인
+        # � 새로운 기능: 자동 작업 분해 및 추적 설정
+        scratchpad.auto_detect_and_track_tasks(goal)
+        
+        # �🔍 실제 등록된 도구 목록 확인
         try:
             if hasattr(self.tool_executor, 'registry') and hasattr(self.tool_executor.registry, 'list_tools'):
                 registered_tools = self.tool_executor.registry.list_tools()
@@ -177,7 +181,21 @@ class NaturalPlanningExecutor:
                 tool_params = next_action["parameters"]
                 reasoning = next_action.get("reasoning", "")
                 
-                scratchpad.add_thought(f"추론: {reasoning}")
+                # 🧠 전체 추론 과정을 상세하게 저장 (토큰 제한 없음)
+                if reasoning:
+                    # 추론이 있으면 상세 정보와 함께 저장
+                    detailed_reasoning = f"추론: {reasoning}"
+                    if tool_name and tool_params:
+                        detailed_reasoning += f"\n선택한 도구: {tool_name}"
+                        detailed_reasoning += f"\n매개변수: {json.dumps(tool_params, ensure_ascii=False, indent=2)}"
+                    scratchpad.add_thought(detailed_reasoning)
+                else:
+                    # reasoning이 없으면 더 상세한 추론 정보 생성
+                    full_thinking = f"도구 사용 결정: {tool_name} 도구를 선택했습니다."
+                    if tool_params:
+                        full_thinking += f"\n매개변수 설정: {json.dumps(tool_params, ensure_ascii=False, indent=2)}"
+                    full_thinking += f"\n작업 목적: 현재 목표 '{scratchpad.goal}'를 달성하기 위한 단계입니다."
+                    scratchpad.add_thought(full_thinking)
                 
                 # 🔍 도구 이름 검증 및 수정
                 if available_tools and tool_name not in available_tools:
@@ -222,15 +240,36 @@ class NaturalPlanningExecutor:
                 scratchpad.add_observation(
                     content=observation_content,
                     success=True if "오류" not in str(result) else False,
-                    data={"result": result}
+                    data=result if isinstance(result, dict) else {"result": result}
                 )
                 
-                logger.info(f"🔍 Scratchpad에 추가된 관찰: {observation_content[:200]}...")
+                logger.info(f"🔍 Scratchpad에 추가된 관찰: {observation_content}")
                 
             elif next_action["type"] == "thinking":
-                # 순수 추론 단계
+                # 순수 추론 단계 - 🧠 전체 추론 과정 상세 저장
                 thought = next_action["content"]
-                scratchpad.add_thought(f"추론: {thought}")
+                
+                # 🔥 사용자 요청: "토큰수 아끼지 말고 띵킹 과정 전체를 다음 띵킹에 넘겨주라"
+                # 추론 과정을 상세하게 기록
+                detailed_thought = f"추론 단계 {iteration_count}: {thought}"
+                
+                # 현재 상황과 맥락 정보도 함께 저장
+                if scratchpad.steps:
+                    last_step = scratchpad.steps[-1]
+                    if last_step.observation:
+                        detailed_thought += f"\n이전 단계 결과: {last_step.observation.content[:200]}..."
+                
+                # 현재 목표와의 연관성도 추가
+                detailed_thought += f"\n목표 관련성: 현재 '{scratchpad.goal}' 달성을 위한 추론 과정"
+                
+                scratchpad.add_thought(detailed_thought)
+                
+                # 🧠 thinking 단계에서도 reasoning_history에 별도 저장
+                scratchpad.reasoning_history.append(f"사고 과정: {thought}")
+                scratchpad.add_thought(f"분석: {thought}")
+                # 별도로 reasoning_history에도 직접 추가하여 맥락 강화
+                if hasattr(scratchpad, 'reasoning_history'):
+                    scratchpad.reasoning_history.append(f"[사고단계] {thought}")
                 
             else:
                 # 알 수 없는 행동 타입
@@ -274,9 +313,35 @@ class NaturalPlanningExecutor:
         # 현재 상황을 자연어로 구성
         situation_summary = scratchpad.get_formatted_history()
         
+        # 이전 thinking 내용 별도 추출 및 요약
+        thinking_history = []
+        action_history = []
+        
+        for step in scratchpad.steps:
+            if hasattr(step, 'action') and step.action:
+                if getattr(step.action, 'action_type', None) == 'thinking':
+                    thinking_content = getattr(step.action, 'content', '')
+                    if thinking_content and thinking_content not in thinking_history:
+                        thinking_history.append(thinking_content)
+                elif getattr(step.action, 'action_type', None) == 'tool_call':
+                    tool_name = getattr(step.action, 'tool_name', '')
+                    action_history.append(tool_name)
+        
+        # thinking 히스토리가 있으면 상황 요약에 포함
+        if thinking_history:
+            thinking_summary = "\n".join([f"• {thought[:100]}..." if len(thought) > 100 else f"• {thought}" 
+                                        for thought in thinking_history[-3:]])  # 최근 3개만
+            situation_summary += f"\n\n📝 이전 추론 과정:\n{thinking_summary}"
+        
+        # 중복된 행동 패턴 감지
+        if len(action_history) >= 3:
+            recent_actions = action_history[-3:]
+            if len(set(recent_actions)) <= 1:  # 같은 도구를 반복 사용
+                situation_summary += f"\n\n⚠️ 주의: '{recent_actions[0]}' 도구를 반복 사용 중입니다. 다른 접근 방법을 고려하세요."
+        
         # 🔍 디버깅: scratchpad 내용 확인
         logger.info(f"🔍 Scratchpad 내용 길이: {len(situation_summary)} 문자")
-        logger.info(f"🔍 Scratchpad 내용 (처음 500자): {situation_summary[:500]}...")
+        logger.info(f"🔍 Scratchpad 전체 내용: {situation_summary}")
         
         # 사용 가능한 도구 목록 구성
         tools_info = ""
@@ -290,9 +355,24 @@ class NaturalPlanningExecutor:
   * list: {{"action": "list"}} - 할일 목록 조회
   * complete: {{"action": "complete", "target_title": "할일제목"}} - 할일 완료 (제목으로 검색)
   * create: {{"action": "create", "title": "새할일"}} - 할일 추가
-- system_time: 현재 시간 조회 (매개변수 없음)
-- calculator: {{"expression": "계산식"}} - 계산 수행
+- system_time: 시간 정보 조회
+  * current: {{"action": "current"}} - 현재 시간 전체 정보
+  * date: {{"action": "date"}} - 날짜만
+  * time: {{"action": "time"}} - 시간만
+  * timezone: {{"action": "timezone"}} - 시간대 정보
+- calculator: {{"expression": "계산식"}} - 계산 수행 (예: "2 + 3 * 4", "sqrt(16)")
 - filesystem: 파일/디렉토리 작업
+  * list: {{"action": "list", "path": "경로"}} - 디렉토리 내용 확인
+  * create_dir: {{"action": "create_dir", "path": "경로"}} - 디렉토리 생성
+  * copy: {{"action": "copy", "path": "원본", "destination": "대상"}} - 파일/디렉토리 복사
+  * move: {{"action": "move", "path": "원본", "destination": "대상"}} - 파일/디렉토리 이동
+  * delete: {{"action": "delete", "path": "경로"}} - 파일/디렉토리 삭제
+  🚨 중요: filesystem 도구 사용 시 반드시 절대경로 사용!
+  ❌ 금지: "Desktop/폴더명" (상대경로) → ✅ 필수: "/Users/taesooa/Desktop/폴더명" (절대경로)
+  💡 사용자 바탕화면은 /Users/taesooa/Desktop 입니다
+- smart_file_finder: LLM 기반 스마트 파일 검색 (⚠️ action과 description 필수!)
+  * find_in_directory: {{"action": "find_in_directory", "description": "찾고자 하는 내용 설명", "directory": "검색할 디렉토리"}} - 특정 디렉토리에서 파일 검색
+  * find_directory: {{"action": "find_directory", "description": "찾고자 하는 디렉토리 설명"}} - 디렉토리 검색
 - apple_calendar: 애플 캘린더 관리
 - apple_contacts: 연락처 관리
 - apple_notes: 메모 관리
@@ -307,6 +387,12 @@ class NaturalPlanningExecutor:
 
 **중요:** 도구 실행 결과가 있다면 핵심 내용만 간단히 포함하세요.
 
+**🧠 추론 연속성 유지 규칙:**
+⚠️ 이전 thinking 단계에서 이미 수행한 추론이 있다면 반드시 참고하세요!
+✅ 같은 생각을 반복하지 말고 다음 단계로 진행하세요
+📋 추론 히스토리를 기반으로 현재 진행 상황을 파악하고 다음 행동을 결정하세요
+🚫 무한루프 방지: 동일한 추론이나 동일한 도구 호출을 반복하지 마세요
+
 {tools_info}
 
 다음 중 하나를 선택하여 응답하세요:
@@ -319,7 +405,13 @@ REASONING: [간단한 이유]
 
 2. 더 생각이 필요한 경우:
 ACTION_TYPE: thinking
-CONTENT: [간단한 추론]
+CONTENT: [간단한 추론 - 이전 thinking과 다른 새로운 관점이나 다음 단계 추론]
+
+**thinking 사용 가이드:**
+- 이전에 이미 생각한 내용은 반복하지 마세요
+- 새로운 정보나 관점이 필요한 경우에만 사용
+- 구체적인 다음 행동 계획을 포함
+- 2-3번 이상 연속 thinking은 피하고 실제 행동으로 전환
 
 3. 최종 답변:
 ACTION_TYPE: final_answer
@@ -331,6 +423,18 @@ CONTENT: [간결한 답변 - 2-3줄 이내]
 - 할일 목록은 제목만 간단히 나열
 - 완료/실패 여부만 명확히 전달
 - 격식적 표현 최소화
+
+**도구 사용 주의사항:**
+⚠️ 절대 이런 실수하지 마세요:
+- smart_file_finder에서 query, search_term, search_path 사용 금지! → action, description 필수
+- smart_file_finder의 directory 경로: "Desktop/폴더명" 형식으로 사용 (예: "Desktop/논문", "Desktop/Documents")
+- filesystem에서 create_directory 금지! → create_dir 사용  
+- system_time은 매개변수 필요함! → action 매개변수 필수
+
+🚨 filesystem 경로 필수 규칙 🚨
+❌ 절대 금지: "Desktop/폴더명", "Documents/파일명" 같은 상대경로
+✅ 반드시 사용: "/Users/taesooa/Desktop/폴더명", "/Users/taesooa/Documents/파일명" 같은 절대경로
+⚠️ 상대경로 사용 시 파일이 프로젝트 폴더에 잘못 생성되어 사용자가 찾을 수 없습니다!
 
 정확한 도구명을 사용하고 간결하게 처리하세요.
 """
@@ -464,7 +568,7 @@ CONTENT: [간결한 답변 - 2-3줄 이내]
             # 결과 로깅
             logger.info(f"📊 도구 실행 결과: 성공={result.result.is_success}")
             if result.result.is_success:
-                logger.info(f"✅ 실행 성공: {str(result.result.data)[:200]}...")
+                logger.info(f"✅ 실행 성공: {str(result.result.data)}")
             else:
                 logger.error(f"❌ 실행 실패: {result.result.error_message}")
             

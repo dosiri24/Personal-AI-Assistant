@@ -121,9 +121,38 @@ class SimpleFilesystemTool(BaseTool):
             return False
 
     def _normalize_path(self, path: str) -> str:
-        """경로 정규화 - 틸드 확장만 수행"""
-        # 틸드 확장만 수행, 스마트 매핑은 system_explorer가 담당
-        return os.path.expanduser(path)
+        """경로 정규화 - 상대경로를 절대경로로 변환"""
+        # 틸드 확장
+        expanded_path = os.path.expanduser(path)
+        
+        # 상대경로 감지 및 자동 변환
+        if not os.path.isabs(expanded_path):
+            # 일반적인 상대경로 패턴을 절대경로로 변환
+            home_dir = os.path.expanduser("~")
+            
+            if expanded_path.startswith("Desktop"):
+                converted_path = os.path.join(home_dir, expanded_path)
+                logger.warning(f"🚨 상대경로 자동 변환: '{path}' → '{converted_path}'")
+                logger.warning("💡 앞으로는 절대경로를 사용해주세요 (예: /Users/taesooa/Desktop/폴더명)")
+                return converted_path
+            elif expanded_path.startswith("Documents"):
+                converted_path = os.path.join(home_dir, expanded_path)
+                logger.warning(f"🚨 상대경로 자동 변환: '{path}' → '{converted_path}'")
+                logger.warning("💡 앞으로는 절대경로를 사용해주세요 (예: /Users/taesooa/Documents/파일명)")
+                return converted_path
+            elif expanded_path.startswith("Downloads"):
+                converted_path = os.path.join(home_dir, expanded_path)
+                logger.warning(f"🚨 상대경로 자동 변환: '{path}' → '{converted_path}'")
+                logger.warning("💡 앞으로는 절대경로를 사용해주세요 (예: /Users/taesooa/Downloads/파일명)")
+                return converted_path
+            else:
+                # 기타 상대경로는 절대경로로 변환
+                converted_path = os.path.abspath(expanded_path)
+                logger.warning(f"🚨 상대경로 자동 변환: '{path}' → '{converted_path}'")
+                logger.warning("💡 프로젝트 폴더가 아닌 사용자 디렉토리에 파일을 만드려면 절대경로를 사용하세요")
+                return converted_path
+        
+        return expanded_path
 
     async def execute(self, parameters: Dict[str, Any]) -> ToolResult:
         """도구 실행"""

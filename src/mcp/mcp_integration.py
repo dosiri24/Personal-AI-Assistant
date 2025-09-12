@@ -80,18 +80,18 @@ class MCPIntegration:
         """MCP 시스템 초기화"""
         logger.info("MCP 시스템 초기화 중...")
 
-        # 에이전틱 어댑터 초기화 (기존 초기화 로직 포함)
-        await self._ensure_agentic_adapter()
-        
-        # 기존 호환성을 위해 기본 초기화도 수행
+        # 기본 LLM Provider 초기화
         ok = await self.llm_provider.initialize()
         if not ok or not self.llm_provider.is_available():
             raise RuntimeError(
                 "LLM Provider(Gemini) 초기화 실패. 환경변수 'GOOGLE_API_KEY'를 설정했는지 확인하세요."
             )
         
-        # 도구는 이미 에이전틱 어댑터에서 등록됨 - 중복 등록 방지
-        # await self._discover_and_register_tools()
+        # 도구 자동 발견 및 등록
+        await self._discover_and_register_tools()
+        
+        # 도구 등록 완료 후 에이전틱 어댑터 초기화
+        await self._ensure_agentic_adapter()
         
         logger.info(f"MCP 시스템 초기화 완료. 등록된 도구 수: {len(self.tool_registry.list_tools())}")
     
@@ -106,20 +106,82 @@ class MCPIntegration:
         discovered_count = await self.tool_registry.discover_tools(package_path)
         logger.info(f"발견된 도구 수: {discovered_count} (패키지: {package_path})")
 
-        # 2) 시스템 시간 도구 수동 등록
-        try:
-            from ..tools.core.system_time import SystemTimeTool
-            system_time_tool = SystemTimeTool()
-            await system_time_tool.initialize()
-            ok = await self.tool_registry.register_tool_instance(system_time_tool)
-            if ok:
-                logger.info("시스템 시간 도구 등록 완료")
-            else:
-                logger.warning("시스템 시간 도구 등록 실패")
-        except Exception as e:
-            logger.warning(f"시스템 시간 도구 등록 건너뜀: {e}")
+        # 2) 특수 도구들 수동 등록
+        
+        # 2-1) Notion Todo 도구 수동 등록 (자동 발견으로 등록되지 않은 경우만)
+        current_tools = self.tool_registry.list_tools()
+        if 'notion_todo' not in current_tools:
+            try:
+                from ..tools.notion.todo_tool import TodoTool
+                todo_tool = TodoTool()
+                logger.info(f"TodoTool 생성 완료: {todo_tool}")
+                
+                await todo_tool.initialize()
+                logger.info(f"TodoTool 초기화 완료")
+                
+                ok = await self.tool_registry.register_tool_instance(todo_tool)
+                logger.info(f"TodoTool 등록 시도 결과: {ok}")
+                
+                if ok:
+                    logger.info("✅ Notion Todo 도구 등록 완료")
+                    discovered_count += 1
+                else:
+                    logger.warning("❌ Notion Todo 도구 등록 실패")
+            except Exception as e:
+                logger.warning(f"⚠️ Notion Todo 도구 등록 건너뜀: {e}")
+                logger.exception("상세 오류 정보:")
+        else:
+            logger.info("✅ Notion Todo 도구가 이미 등록되어 있음 (자동 발견)")
 
-        # 3) Apple MCP 도구 수동 등록 (생성자 주입 필요)
+        # 2-2) 시스템 시간 도구 수동 등록
+        if 'system_time' not in current_tools:
+            try:
+                from ..tools.core.system_time import SystemTimeTool
+                system_time_tool = SystemTimeTool()
+                logger.info(f"SystemTimeTool 생성 완료: {system_time_tool}")
+                
+                await system_time_tool.initialize()
+                logger.info(f"SystemTimeTool 초기화 완료")
+                
+                ok = await self.tool_registry.register_tool_instance(system_time_tool)
+                logger.info(f"SystemTimeTool 등록 시도 결과: {ok}")
+                
+                if ok:
+                    logger.info("✅ 시스템 시간 도구 등록 완료")
+                    discovered_count += 1
+                else:
+                    logger.warning("❌ 시스템 시간 도구 등록 실패")
+            except Exception as e:
+                logger.warning(f"⚠️ 시스템 시간 도구 등록 건너뜀: {e}")
+                logger.exception("상세 오류 정보:")
+        else:
+            logger.info("✅ 시스템 시간 도구가 이미 등록되어 있음")
+
+        # 2-3) 스마트 파일 찾기 도구 수동 등록
+        if 'smart_file_finder' not in current_tools:
+            try:
+                from .smart_file_finder import SmartFileFinderTool
+                smart_file_finder = SmartFileFinderTool(self.llm_provider)
+                logger.info(f"SmartFileFinderTool 생성 완료: {smart_file_finder}")
+                
+                await smart_file_finder.initialize()
+                logger.info(f"SmartFileFinderTool 초기화 완료")
+                
+                ok = await self.tool_registry.register_tool_instance(smart_file_finder)
+                logger.info(f"SmartFileFinderTool 등록 시도 결과: {ok}")
+                
+                if ok:
+                    logger.info("✅ 스마트 파일 찾기 도구 등록 완료")
+                    discovered_count += 1
+                else:
+                    logger.warning("❌ 스마트 파일 찾기 도구 등록 실패")
+            except Exception as e:
+                logger.warning(f"⚠️ 스마트 파일 찾기 도구 등록 건너뜀: {e}")
+                logger.exception("상세 오류 정보:")
+        else:
+            logger.info("✅ 스마트 파일 찾기 도구가 이미 등록되어 있음")
+
+        # 2-4) Apple MCP 도구 수동 등록
         try:
             from .apple.apple_tools import register_apple_tools
             from .apple.apple_client import AppleAppsManager
@@ -129,16 +191,22 @@ class MCPIntegration:
 
             registered = 0
             for tool in apple_tools:
-                ok = await self.tool_registry.register_tool_instance(tool)
-                if ok:
-                    registered += 1
+                try:
+                    ok = await self.tool_registry.register_tool_instance(tool)
+                    if ok:
+                        registered += 1
+                except Exception as tool_error:
+                    logger.warning(f"Apple 도구 {tool} 등록 실패: {tool_error}")
+                    continue
 
             if registered > 0:
-                logger.info(f"Apple MCP 도구 등록: {registered}개")
+                logger.info(f"✅ Apple MCP 도구 등록: {registered}개")
             else:
-                logger.warning("Apple MCP 도구 등록 0개 (권한/환경 확인 필요)")
+                logger.warning("❌ Apple MCP 도구 등록 0개 (권한/환경 확인 필요)")
         except Exception as e:
-            logger.warning(f"Apple MCP 도구 등록 건너뜀: {e}")
+            logger.warning(f"⚠️ Apple MCP 도구 등록 건너뜀: {e}")
+            
+        logger.info(f"총 등록된 도구 수: {discovered_count}")
     
     async def process_user_request(
         self,

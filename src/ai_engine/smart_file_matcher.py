@@ -6,7 +6,10 @@
 
 import json
 import asyncio
-from typing import List, Dict, Any, Optional
+import os
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Union
 from .llm_provider import LLMProvider, ChatMessage
 from ..utils.logger import get_logger
 
@@ -18,6 +21,223 @@ class SmartFileMatcher:
     
     def __init__(self, llm_provider: LLMProvider):
         self.llm_provider = llm_provider
+    
+    async def find_files_in_directory(
+        self, 
+        directory_path: str,
+        user_request: str,
+        recursive: bool = True,
+        file_extensions: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        디렉토리를 스캔하고 사용자 요청에 맞는 파일들을 찾기
+        
+        Args:
+            directory_path: 검색할 디렉토리 경로
+            user_request: 사용자 요청 (예: "젠트리피케이션 관련 논문들")
+            recursive: 하위 디렉토리까지 검색할지 여부
+            file_extensions: 검색할 파일 확장자 필터 (예: ['.pdf', '.docx'])
+            
+        Returns:
+            Dict: 검색 결과와 선택된 파일들
+        """
+        try:
+            # 1단계: 디렉토리 스캔
+            file_list = await self._scan_directory(directory_path, recursive, file_extensions)
+            
+            if not file_list:
+                return {
+                    "success": False,
+                    "message": f"디렉토리 '{directory_path}'에서 파일을 찾을 수 없습니다.",
+                    "total_files": 0,
+                    "selected_files": []
+                }
+            
+            # 2단계: LLM을 통한 스마트 매칭
+            selected_files = await self.match_files(file_list, user_request)
+            
+            return {
+                "success": True,
+                "directory": directory_path,
+                "total_files": len(file_list),
+                "selected_files": selected_files,
+                "message": f"{len(file_list)}개 파일 중 {len(selected_files)}개 파일을 선택했습니다."
+            }
+            
+        except Exception as e:
+            logger.error(f"디렉토리 스마트 검색 실패: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "total_files": 0,
+                "selected_files": []
+            }
+    
+    async def find_target_directory(
+        self,
+        search_paths: List[str],
+        directory_description: str
+    ) -> Optional[str]:
+        """
+        여러 경로에서 사용자가 설명한 디렉토리를 찾기
+        
+        Args:
+            search_paths: 검색할 경로들 (예: ["~/Desktop", "~/Documents", "~/Downloads"])
+            directory_description: 디렉토리 설명 (예: "논문 폴더", "연구 자료")
+            
+        Returns:
+            찾은 디렉토리 경로 또는 None
+        """
+        try:
+            all_directories = []
+            
+            # 각 경로에서 디렉토리 목록 수집
+            for search_path in search_paths:
+                expanded_path = os.path.expanduser(search_path)
+                if os.path.exists(expanded_path):
+                    dirs = await self._get_directories(expanded_path)
+                    all_directories.extend(dirs)
+            
+            if not all_directories:
+                return None
+            
+            # LLM에게 가장 적절한 디렉토리 선택 요청
+            selected_dir = await self._select_target_directory(all_directories, directory_description)
+            return selected_dir
+            
+        except Exception as e:
+            logger.error(f"대상 디렉토리 찾기 실패: {e}")
+            return None
+    
+    async def _scan_directory(
+        self, 
+        directory_path: str, 
+        recursive: bool = True,
+        file_extensions: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """디렉토리 스캔하여 파일 정보 수집"""
+        file_list = []
+        expanded_path = os.path.expanduser(directory_path)
+        
+        if not os.path.exists(expanded_path):
+            logger.warning(f"경로가 존재하지 않습니다: {expanded_path}")
+            return []
+        
+        try:
+            if recursive:
+                for root, dirs, files in os.walk(expanded_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        file_info = await self._get_file_info(file_path, file_extensions)
+                        if file_info:
+                            file_list.append(file_info)
+            else:
+                for item in os.listdir(expanded_path):
+                    item_path = os.path.join(expanded_path, item)
+                    if os.path.isfile(item_path):
+                        file_info = await self._get_file_info(item_path, file_extensions)
+                        if file_info:
+                            file_list.append(file_info)
+                            
+        except Exception as e:
+            logger.error(f"디렉토리 스캔 오류: {e}")
+        
+        return file_list
+    
+    async def _get_file_info(self, file_path: str, file_extensions: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """파일 정보 추출"""
+        try:
+            # 확장자 필터링
+            if file_extensions:
+                file_ext = Path(file_path).suffix.lower()
+                if file_ext not in [ext.lower() for ext in file_extensions]:
+                    return None
+            
+            stat = os.stat(file_path)
+            
+            return {
+                "name": os.path.basename(file_path),
+                "path": file_path,
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                "extension": Path(file_path).suffix.lower()
+            }
+        except Exception as e:
+            logger.warning(f"파일 정보 추출 실패 ({file_path}): {e}")
+            return None
+    
+    async def _get_directories(self, search_path: str) -> List[Dict[str, str]]:
+        """지정된 경로에서 디렉토리 목록 가져오기"""
+        directories = []
+        
+        try:
+            for item in os.listdir(search_path):
+                item_path = os.path.join(search_path, item)
+                if os.path.isdir(item_path) and not item.startswith('.'):
+                    directories.append({
+                        "name": item,
+                        "path": item_path
+                    })
+        except Exception as e:
+            logger.warning(f"디렉토리 목록 가져오기 실패 ({search_path}): {e}")
+        
+        return directories
+    
+    async def _select_target_directory(self, directories: List[Dict[str, str]], description: str) -> Optional[str]:
+        """LLM을 통해 설명에 가장 맞는 디렉토리 선택"""
+        if not directories:
+            return None
+        
+        # 디렉토리 목록 포맷팅
+        dir_list = "\n".join([f"- {d['name']} -> {d['path']}" for d in directories])
+        
+        prompt = f"""다음 디렉토리 목록에서 사용자 설명에 가장 적합한 디렉토리를 선택해주세요.
+
+📁 **디렉토리 목록**:
+{dir_list}
+
+👤 **사용자 설명**: {description}
+
+📋 **선택 기준**:
+- 디렉토리명과 사용자 설명 간의 의미적 연관성
+- 일반적인 명명 규칙 고려 (예: "Papers" = "논문", "Research" = "연구")
+- 애매한 경우 가장 가능성 높은 것 선택
+
+⚡ **응답 형식** (JSON만):
+```json
+{{
+    "selected_directory": "정확한_디렉토리_경로",
+    "reasoning": "선택 이유"
+}}
+```
+
+가장 적절한 디렉토리 하나만 선택해주세요."""
+
+        try:
+            response = await self.llm_provider.generate_response([
+                ChatMessage(role="user", content=prompt)
+            ])
+            
+            # JSON 파싱
+            start_idx = response.content.find('{')
+            end_idx = response.content.rfind('}') + 1
+            
+            if start_idx >= 0 and end_idx > start_idx:
+                json_str = response.content[start_idx:end_idx]
+                result = json.loads(json_str)
+                
+                selected_dir = result.get('selected_directory')
+                reasoning = result.get('reasoning', '')
+                
+                if reasoning:
+                    logger.info(f"디렉토리 선택 이유: {reasoning}")
+                
+                return selected_dir
+                
+        except Exception as e:
+            logger.error(f"디렉토리 선택 실패: {e}")
+        
+        return None
     
     async def match_files(
         self, 

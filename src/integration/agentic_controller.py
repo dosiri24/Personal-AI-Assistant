@@ -194,6 +194,7 @@ class AgenticController:
                 available_tools=list(self.tool_registry.list_tools()),
                 max_iterations=max_iterations,
                 timeout_seconds=timeout_seconds,
+                conversation_history=(conversation_history or [])[-10:],  # 최근 10개 대화까지
                 constraints={"conversation_history": (conversation_history or [])[:10]}
             )
             
@@ -201,7 +202,11 @@ class AgenticController:
                         f"사용가능도구={len(context.available_tools)}개")
             
             # ReAct 엔진 실행
-            result = await self.react_engine.execute_goal(context)
+            result = await self.react_engine.execute_goal(
+                goal=user_input,
+                context=context,
+                available_tools=context.available_tools
+            )
             
             # 결과 포맷팅
             if result.success:
@@ -270,6 +275,7 @@ class AgenticController:
                 session_id=f"session_{int(time.time())}",
                 goal=user_input,
                 available_tools=self.tool_registry.list_tools(),
+                conversation_history=(conversation_history or [])[-10:],  # 최근 10개 대화까지
                 max_iterations=max_iterations,
                 timeout_seconds=timeout_seconds
             )

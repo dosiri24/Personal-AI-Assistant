@@ -72,9 +72,6 @@ class LegacyMCPAdapter:
         if not self.llm_provider.is_available():
             raise RuntimeError("LLM Provider를 사용할 수 없습니다")
         
-        # 도구 자동 발견 및 등록 (기존 방식)
-        await self._discover_and_register_tools()
-        
         # 도구 등록 완료 후 AgenticController 초기화
         logger.info("AgenticController 초기화 중...")
         self.agentic_controller = AgenticController(
@@ -99,60 +96,6 @@ class LegacyMCPAdapter:
                 logger.warning("notion_todo 도구가 등록되었지만 메타데이터 없음")
         else:
             logger.error("❌ notion_todo 도구가 등록되지 않음!")
-    
-    async def _discover_and_register_tools(self):
-        """도구 자동 발견 및 등록 (기존 방식 유지)"""
-        # 1) 일반 도구 자동 발견
-        package_path = "src.tools"
-        discovered_count = await self._tool_registry.discover_tools(package_path) if self._tool_registry else 0
-        logger.info(f"발견된 도구 수: {discovered_count} (패키지: {package_path})")
-
-        # 1-1) 수동으로 Notion Todo 도구 등록 (자동 발견으로 등록되지 않은 경우만)
-        current_tools = self._tool_registry.list_tools() if self._tool_registry else []
-        if 'notion_todo' not in current_tools:
-            try:
-                from ..tools.notion.todo_tool import TodoTool
-                todo_tool = TodoTool()
-                logger.info(f"TodoTool 생성 완료: {todo_tool}")
-                
-                await todo_tool.initialize()
-                logger.info(f"TodoTool 초기화 완료")
-                
-                ok = await self._tool_registry.register_tool_instance(todo_tool) if self._tool_registry else False
-                logger.info(f"TodoTool 등록 시도 결과: {ok}")
-                
-                if ok:
-                    logger.info("✅ Notion Todo 도구 수동 등록 완료")
-                    discovered_count += 1
-                else:
-                    logger.warning("❌ Notion Todo 도구 수동 등록 실패")
-            except Exception as e:
-                logger.warning(f"⚠️ Notion Todo 도구 수동 등록 건너뜀: {e}")
-                logger.exception("상세 오류 정보:")  # 스택 트레이스 추가
-        else:
-            logger.info("✅ Notion Todo 도구가 이미 등록되어 있음 (자동 발견)")
-            discovered_count += 1
-
-        # 2) Apple MCP 도구 수동 등록
-        try:
-            from ..mcp.apple.apple_tools import register_apple_tools
-            from ..mcp.apple.apple_client import AppleAppsManager
-
-            apple_manager = AppleAppsManager()
-            apple_tools = register_apple_tools(apple_manager)
-
-            registered = 0
-            for tool in apple_tools:
-                ok = await self._tool_registry.register_tool_instance(tool) if self._tool_registry else False
-                if ok:
-                    registered += 1
-
-            if registered > 0:
-                logger.info(f"Apple MCP 도구 등록: {registered}개")
-            else:
-                logger.warning("Apple MCP 도구 등록 0개 (권한/환경 확인 필요)")
-        except Exception as e:
-            logger.warning(f"Apple MCP 도구 등록 건너뜀: {e}")
     
     async def process_user_request(
         self,
