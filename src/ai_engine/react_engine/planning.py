@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 계획 실행 모듈 (PlanningExecutor)
 
@@ -18,8 +20,12 @@ from ..placeholder_resolver import placeholder_resolver
 from ..goal_manager import GoalHierarchy
 from ..dynamic_adapter import DynamicPlanAdapter
 from ..llm_provider import LLMProvider
-from ...mcp.executor import ToolExecutor
+from typing import TYPE_CHECKING
 from ...utils.logger import get_logger
+
+if TYPE_CHECKING:
+    # 타입 체크 전용 임포트로 순환 의존성 회피
+    from ...mcp.executor import ToolExecutor
 
 logger = get_logger(__name__)
 

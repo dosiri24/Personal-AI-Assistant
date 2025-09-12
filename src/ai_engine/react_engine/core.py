@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 ReactEngine 핵심 모듈
 
@@ -14,9 +16,13 @@ from ..prompt_templates import PromptManager
 from ..planning_engine import PlanningEngine, ExecutionPlan
 from ..goal_manager import GoalManager, GoalHierarchy
 from ..dynamic_adapter import DynamicPlanAdapter
-from ...mcp.registry import ToolRegistry
-from ...mcp.executor import ToolExecutor
+from typing import TYPE_CHECKING
 from ...utils.logger import get_logger
+
+if TYPE_CHECKING:
+    # 타입 체크 전용 임포트로 순환 의존성 회피
+    from ...mcp.registry import ToolRegistry
+    from ...mcp.executor import ToolExecutor
 
 from .thought import ThoughtGenerator
 from .observation import ObservationManager
