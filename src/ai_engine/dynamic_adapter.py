@@ -14,6 +14,7 @@ from enum import Enum
 from datetime import datetime, timedelta
 
 from .llm_provider import LLMProvider, ChatMessage
+from .smart_file_matcher import SmartFileMatcher
 from .agent_state import AgentContext
 from .planning_engine import ExecutionPlan, PlanStep, TaskStatus, TaskPriority
 from .goal_manager import GoalHierarchy, Goal, GoalType
@@ -108,9 +109,10 @@ class DynamicPlanAdapter:
     
     def __init__(self, llm_provider: LLMProvider):
         self.llm_provider = llm_provider
+        self.smart_file_matcher = SmartFileMatcher(llm_provider)
         self.adaptation_history = AdaptationHistory()
         
-        logger.info("동적 계획 수정 시스템 초기화 완료")
+        logger.info("동적 계획 수정 시스템 초기화 완료 (SmartFileMatcher 포함)")
     
     async def analyze_situation(
         self,
@@ -430,19 +432,65 @@ class DynamicPlanAdapter:
         return plan
     
     def _apply_alternative_strategy(self, action: AdaptationAction, plan: ExecutionPlan) -> ExecutionPlan:
-        """대안 전략 적용"""
+        """대안 전략 적용 - 2단계 접근법: 탐색 → 실행"""
         for modification in action.modifications:
             if modification.get("type") == "step_modification":
                 step_id = modification.get("target")
                 for step in plan.steps:
-                    if step.step_id == step_id:
-                        # 대안 도구나 방법 적용
-                        if "alternative_tool" in modification:
+                    if step.step_id == step_id and step.status == TaskStatus.FAILED:
+                        # 파일 관련 작업 실패 시 MCP Doctor 통한 해결
+                        if step.tool_name == "filesystem" and step.tool_params:
+                            original_action = step.tool_params.get("action")
+                            original_path = step.tool_params.get("path")
+                            
+                            # 1단계: MCP Doctor에게 오류 진단 요청
+                            doctor_step = PlanStep(
+                                step_id=f"{step_id}_doctor",
+                                description=f"MCP Doctor를 통한 오류 진단 및 해결책 조회",
+                                action_type="tool_call",
+                                tool_name="mcp_doctor",
+                                tool_params={
+                                    "query_type": "error_diagnosis",
+                                    "tool_name": "filesystem",
+                                    "error_message": step.error or "매개변수 오류"
+                                }
+                            )
+                            plan.steps.append(doctor_step)
+                            
+                            # 2단계: 시스템 탐색으로 변경 (범용적 탐색)
+                            step.tool_name = "system_explorer"
+                            step.tool_params = {
+                                "action": "get_structure",  # 범용적 구조 탐색
+                                "path": original_path or "/Users/taesooa/Desktop",
+                                "depth": 1  # 최상위 파일들만 탐색
+                            }
+                            step.description = f"1단계: 대상 디렉토리 파일 목록 탐색 (원래 작업: {original_action})"
+                            step.dependencies = [f"{step_id}_doctor"]  # Doctor 조회 후 실행
+                            
+                            # 3단계: 정정된 매개변수로 실제 파일 작업
+                            corrected_action = "delete" if original_action == "delete_file" else original_action
+                            execute_step = PlanStep(
+                                step_id=f"{step_id}_execute",
+                                description=f"2단계: 파일 {corrected_action} 실행 (Doctor 조언 반영)",
+                                action_type="tool_call",
+                                tool_name="filesystem",
+                                tool_params={
+                                    "action": corrected_action,  # 정정된 정확한 action 값 사용
+                                    "path": original_path or "탐색_결과_기반"
+                                },
+                                dependencies=[step_id] if step_id else []  # 탐색 완료 후 실행
+                            )
+                            plan.steps.append(execute_step)
+                            
+                        # 기타 대안 적용
+                        elif "alternative_tool" in modification:
                             step.tool_name = modification["alternative_tool"]
                         if "alternative_params" in modification:
                             step.tool_params = modification["alternative_params"]
+                        
                         step.status = TaskStatus.PENDING
-                        logger.debug(f"대안 전략 적용: {step_id}")
+                        step.error = None  # 에러 메시지 초기화
+                        logger.debug(f"2단계 대안 전략 적용: {step_id} - 탐색 후 실행")
         
         return plan
     

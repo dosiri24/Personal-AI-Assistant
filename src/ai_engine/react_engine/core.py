@@ -60,7 +60,7 @@ class ReactEngine:
         self.thought_generator = ThoughtGenerator(llm_provider)
         self.observation_manager = ObservationManager()
         self.action_executor = ActionExecutor(tool_registry, tool_executor)
-        self.planning_executor = PlanningExecutor(tool_executor, self.dynamic_adapter)
+        self.planning_executor = PlanningExecutor(tool_executor, self.dynamic_adapter, llm_provider)
         self.adaptation_manager = AdaptationManager(self.dynamic_adapter)
         
         # 현재 활성 계획 및 목표
@@ -255,7 +255,7 @@ class ReactEngine:
             response = await self.llm_provider.generate_response(
                 messages=messages,
                 temperature=0.3,  # 정확한 행동 결정을 위해 낮은 온도
-                max_tokens=4096,  # 행동 결정 토큰 수 축소
+                max_tokens=8192,  # 행동 결정 토큰 수 증가 (4096→8192)
                 response_mime_type='application/json'
             )
             

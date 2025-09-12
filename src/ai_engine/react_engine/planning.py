@@ -5,6 +5,7 @@ ReAct 엔진의 계획 기반 실행 부분을 담당하는 모듈
 """
 
 import asyncio
+import ast
 import json
 import time
 from typing import Optional, Dict, Any, Union
@@ -12,9 +13,11 @@ from datetime import datetime
 from ..agent_state import (
     AgentScratchpad, AgentContext, AgentResult, ActionRecord, ObservationRecord, ActionType
 )
-from ..planning_engine import ExecutionPlan, TaskStatus as PlanTaskStatus
+from ..planning_engine import ExecutionPlan, PlanStep, TaskStatus as PlanTaskStatus, TaskStatus
+from ..placeholder_resolver import placeholder_resolver
 from ..goal_manager import GoalHierarchy
 from ..dynamic_adapter import DynamicPlanAdapter
+from ..llm_provider import LLMProvider
 from ...mcp.executor import ToolExecutor
 from ...utils.logger import get_logger
 
@@ -24,9 +27,10 @@ logger = get_logger(__name__)
 class PlanningExecutor:
     """계획 실행기 - 고급 계획 기반 실행"""
     
-    def __init__(self, tool_executor: ToolExecutor, dynamic_adapter: DynamicPlanAdapter):
+    def __init__(self, tool_executor: ToolExecutor, dynamic_adapter: DynamicPlanAdapter, llm_provider: LLMProvider):
         self.tool_executor = tool_executor
         self.dynamic_adapter = dynamic_adapter
+        self.llm_provider = llm_provider
     
     async def execute_plan_with_adaptation(
         self, 
@@ -45,6 +49,10 @@ class PlanningExecutor:
         current_plan = plan
         if not current_plan:
             raise ValueError("실행할 계획이 없습니다")
+        
+        # 무한 루프 방지: 동일 단계 연속 실패 추적
+        step_failure_count = {}
+        max_step_failures = 3  # 동일 단계 최대 3회 실패 허용
         
         for iteration in range(context.max_iterations):
             logger.debug(f"계획 실행 반복 {iteration + 1}/{context.max_iterations}")
@@ -86,15 +94,31 @@ class PlanningExecutor:
             current_step = next_steps[0]
             current_step.status = PlanTaskStatus.IN_PROGRESS
             
+            # 무한 루프 방지: 동일 단계 연속 실패 체크
+            step_id = current_step.step_id
+            if step_id in step_failure_count and step_failure_count[step_id] >= max_step_failures:
+                logger.warning(f"단계 {step_id} 최대 실패 횟수 초과 - 건너뛰기")
+                current_step.status = PlanTaskStatus.SKIPPED
+                current_step.error = f"최대 재시도 횟수 초과 ({max_step_failures}회)"
+                continue
+            
             step_start_time = time.time()
             
             # 단계 실행
             execution_result = await self._execute_plan_step(
-                current_step, scratchpad, context
+                current_step, plan, scratchpad
             )
             
             execution_result["execution_time"] = time.time() - step_start_time
             execution_result["total_elapsed"] = time.time() - start_time
+            
+            # 실패 카운트 업데이트
+            if execution_result.get("status") == "failed":
+                step_failure_count[step_id] = step_failure_count.get(step_id, 0) + 1
+                logger.warning(f"단계 {step_id} 실패 (총 {step_failure_count[step_id]}회)")
+            else:
+                # 성공시 카운트 리셋
+                step_failure_count.pop(step_id, None)
             
             # 적응 필요성 분석
             adaptation_event = await self.dynamic_adapter.analyze_situation(
@@ -130,16 +154,19 @@ class PlanningExecutor:
     
     async def _execute_plan_step(
         self, 
-        step: Any, 
-        scratchpad: AgentScratchpad, 
-        context: AgentContext
+        step: PlanStep, 
+        plan: ExecutionPlan,  # plan 매개변수 추가
+        scratchpad: AgentScratchpad  # 올바른 타입으로 수정
     ) -> Dict[str, Any]:
         """계획 단계 실행"""
         
         try:
             if step.action_type == "tool_call" and step.tool_name:
+                # 의존성 결과를 매개변수에 주입
+                resolved_params = self._resolve_dependencies(step, plan)
+                
                 # 매개변수 검증 및 보정
-                validated_params = self._validate_and_fix_tool_params(step.tool_name, step.tool_params or {})
+                validated_params = self._validate_and_fix_tool_params(step.tool_name, resolved_params)
                 
                 if validated_params is None:
                     step.status = PlanTaskStatus.FAILED
@@ -218,6 +245,114 @@ class PlanningExecutor:
                 "expected_duration": step.estimated_duration
             }
     
+    def _resolve_dependencies(self, step: PlanStep, plan: ExecutionPlan) -> Dict[str, Any]:
+        """단계 의존성을 해결하여 실제 매개변수 생성"""
+        if not step.tool_params:
+            return {}
+        
+        # 의존성 결과 수집 (완료된 단계들의 결과)
+        dependency_results = {}
+        for dep_step_id in step.dependencies:
+            dep_step = next((s for s in plan.steps if s.step_id == dep_step_id), None)
+            if dep_step and dep_step.status == TaskStatus.COMPLETED:
+                # 실행 결과는 plan 레벨에서 추적되어야 함
+                # 임시로 빈 결과 사용 (실제 구현에서는 plan.execution_results 등에서 가져와야 함)
+                dependency_results[dep_step_id] = {}
+        
+        # 새로운 PlaceholderResolver 사용
+        resolved_params = placeholder_resolver.resolve_placeholders(
+            step.tool_params, 
+            dependency_results
+        )
+        
+        logger.debug(f"의존성 해결 완료: {step.step_id} - {len(dependency_results)}개 의존성")
+        return resolved_params
+    
+    def _substitute_placeholders(self, params: Dict[str, Any], dependency_results: Dict[str, Any]) -> Dict[str, Any]:
+        """매개변수의 플레이스홀더를 실제 결과로 치환"""
+        import re
+        
+        def substitute_value(value):
+            if isinstance(value, str):
+                # 1. "<바탕화면_경로>" 같은 대괄호 플레이스홀더 처리
+                angle_pattern = r'<([^>]+)>'
+                angle_matches = re.finditer(angle_pattern, value)
+                
+                for match in angle_matches:
+                    placeholder = match.group(1)
+                    logger.debug(f"각도 괄호 플레이스홀더 발견: {placeholder}")
+                    
+                    # 바탕화면 경로 특별 처리
+                    if "바탕화면" in placeholder or "desktop" in placeholder.lower():
+                        import os
+                        desktop_path = os.path.expanduser("~/Desktop")
+                        value = value.replace(match.group(0), desktop_path)
+                        logger.info(f"바탕화면 경로 치환: {match.group(0)} → {desktop_path}")
+                        continue
+                    
+                    # 다른 플레이스홀더 처리
+                    if placeholder in dependency_results:
+                        result_data = dependency_results[placeholder]
+                        if isinstance(result_data, list) and result_data:
+                            if isinstance(result_data[0], dict) and 'path' in result_data[0]:
+                                replacement = result_data[0]['path']
+                            else:
+                                replacement = str(result_data[0])
+                        elif isinstance(result_data, dict) and 'path' in result_data:
+                            replacement = result_data['path']
+                        else:
+                            replacement = str(result_data)
+                        value = value.replace(match.group(0), replacement)
+                        logger.info(f"플레이스홀더 치환: {match.group(0)} → {replacement}")
+                
+                # 2. "[step_X 결과: ...]" 패턴 찾기
+                pattern = r'\[([^]]+) 결과:[^]]+\]'
+                matches = re.finditer(pattern, value)
+                
+                for match in matches:
+                    step_ref = match.group(1)
+                    if step_ref in dependency_results:
+                        # 결과가 리스트인 경우 첫 번째 항목 사용
+                        result_data = dependency_results[step_ref]
+                        if isinstance(result_data, list) and result_data:
+                            if isinstance(result_data[0], dict) and 'path' in result_data[0]:
+                                # 파일 경로 리스트인 경우
+                                value = result_data[0]['path']
+                            else:
+                                value = str(result_data[0])
+                        elif isinstance(result_data, dict) and 'path' in result_data:
+                            value = result_data['path']
+                        else:
+                            value = str(result_data)
+                        break
+                
+                # 3. "탐색_결과_기반" 같은 플레이스홀더도 처리
+                if value == "탐색_결과_기반" and dependency_results:
+                    # 가장 최근 의존성 결과 사용
+                    latest_result = list(dependency_results.values())[-1]
+                    if isinstance(latest_result, list) and latest_result:
+                        if isinstance(latest_result[0], dict) and 'path' in latest_result[0]:
+                            value = latest_result[0]['path']
+                        else:
+                            value = str(latest_result[0])
+                    elif isinstance(latest_result, dict) and 'path' in latest_result:
+                        value = latest_result['path']
+                    else:
+                        value = str(latest_result)
+            
+            return value
+        
+        resolved = {}
+        for key, value in params.items():
+            if isinstance(value, dict):
+                resolved[key] = self._substitute_placeholders(value, dependency_results)
+            elif isinstance(value, list):
+                resolved[key] = [substitute_value(item) for item in value]
+            else:
+                resolved[key] = substitute_value(value)
+        
+        return resolved
+    
     def _validate_and_fix_tool_params(self, tool_name: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """도구 매개변수 검증 및 보정"""
         try:
@@ -238,163 +373,90 @@ class PlanningExecutor:
     async def _generate_final_answer(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
         """최종 답변 생성"""
         try:
-            if scratchpad.steps:
-                last_observation = scratchpad.steps[-1].observation
-                if last_observation and last_observation.success:
-                    # 도구 실행 결과를 사용자 친화적으로 변환
-                    return self._format_user_friendly_response(last_observation.content, context.goal)
-            
-            return "요청하신 작업을 완료했습니다."
+            # LLM에게 자연어로 최종 답변 생성 요청
+            return await self._generate_natural_response(scratchpad, context)
             
         except Exception as e:
             logger.error(f"최종 답변 생성 실패: {e}")
             return "작업이 완료되었습니다."
     
-    def _format_user_friendly_response(self, content: Union[str, dict], goal: str) -> str:
-        """응답을 사용자 친화적으로 포맷팅"""
-        logger.debug(f"포맷팅할 컨텐츠: {content}")
-        logger.debug(f"목표: {goal}")
+    async def _generate_natural_response(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
+        """LLM을 통해 자연어 답변 생성"""
         
-        # 이미 딕셔너리인 경우 직접 처리
-        if isinstance(content, dict):
-            logger.debug("컨텐츠가 딕셔너리임")
-            
-            # notion_todo 도구 응답 처리
-            if "todos" in content:
-                logger.debug("todos 키 발견, _format_todo_response 호출")
-                return self._format_todo_response(content)
-                
-            # 기타 도구 응답은 간단히 처리
-            if "message" in content:
-                logger.debug(f"message 키 발견: {content['message']}")
-                return content["message"]
-                
-            # 딕셔너리에서 다른 유용한 정보 찾기
-            if "result" in content:
-                logger.debug(f"result 키 발견: {content['result']}")
-                return str(content["result"])
-                
-            # 딕셔너리 전체를 문자열로 변환해서 재시도
-            logger.debug("딕셔너리를 문자열로 변환 후 재시도")
-            content = str(content)
+        # 전체 실행 과정을 LLM에게 제공
+        history = []
+        history.append(f"사용자 요청: {context.goal}")
         
-        # 문자열인 경우 JSON 추출 시도
-        if isinstance(content, str):
-            logger.debug("컨텐츠가 문자열임, JSON 추출 시도")
-            
-            # {} 블록 찾기
-            json_blocks = []
-            i = 0
-            while i < len(content):
-                if content[i] == '{':
-                    brace_count = 1
-                    start = i
-                    i += 1
-                    while i < len(content) and brace_count > 0:
-                        if content[i] == '{':
-                            brace_count += 1
-                        elif content[i] == '}':
-                            brace_count -= 1
-                        i += 1
-                    
-                    if brace_count == 0:
-                        json_blocks.append(content[start:i])
+        for i, step in enumerate(scratchpad.steps, 1):
+            if step.action:
+                action_desc = f"도구 '{step.action.tool_name}' 실행"
+                if step.action.parameters:
+                    params = ", ".join([f"{k}={v}" for k, v in step.action.parameters.items()])
+                    action_desc += f" (매개변수: {params})"
+                history.append(f"{i}. {action_desc}")
+                
+            if step.observation:
+                if step.observation.success:
+                    history.append(f"   결과: {step.observation.content}")
                 else:
-                    i += 1
-            
-            logger.debug(f"발견된 JSON 블록들: {json_blocks}")
-            
-            # 각 JSON 블록 파싱 시도
-            for json_part in json_blocks:
-                logger.debug(f"파싱 시도할 JSON 부분: {json_part}")
-                if json_part.strip():
-                    try:
-                        # JSON 문자열에서 작은따옴표를 큰따옴표로 변경
-                        json_part_fixed = json_part.replace("'", '"')
-                        data = json.loads(json_part_fixed)
-                        logger.debug(f"파싱된 데이터: {data}")
-                        
-                        # notion_todo 도구 응답 처리
-                        if "todos" in data:
-                            return self._format_todo_response(data)
-                        
-                        # 기타 도구 응답은 간단히 처리
-                        if "message" in data:
-                            return data["message"]
-                            
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"JSON 파싱 실패: {e}")
-                        pass
-            
-            # JSON 파싱 실패 시 간단한 메시지로 대체
-            if "할일" in goal or "todo" in goal.lower():
-                return "할일 목록을 확인했습니다."
-            
-            return "요청하신 작업을 완료했습니다."
+                    history.append(f"   오류: {step.observation.content}")
         
-        # 기본 반환값
-        return "요청하신 작업을 완료했습니다."
-    
-    def _format_todo_response(self, data: dict) -> str:
-        """할일 응답을 사용자 친화적으로 포맷팅"""
+        execution_summary = "\n".join(history)
+        
+        prompt = f"""당신은 개인 AI 비서입니다. 사용자의 요청에 대해 수행한 작업 결과를 자연스럽게 보고해주세요.
+
+실행 과정:
+{execution_summary}
+
+다음 가이드라인을 따라 답변해주세요:
+1. 자연스러운 비서 말투로 답변
+2. 수행한 작업의 핵심 결과만 간결하게 요약
+3. 사용자가 요청한 정보를 명확하게 전달
+4. 불필요한 기술적 세부사항은 생략
+5. 형식적이지 않고 대화하듯 자연스럽게
+
+예시:
+- "할일 목록을 확인해봤는데, 현재 2개 있습니다. 공부노트 자료구조 파트 작업이 진행 중이고, 부산 기행문 작성이 예정되어 있네요."
+- "계산해보니 결과는 42입니다."
+- "메모를 저장했습니다."
+
+답변:"""
+
         try:
-            todos = data.get("todos", [])
-            count = data.get("count", len(todos))
+            from ..llm_provider import ChatMessage
             
-            if count == 0:
-                return "현재 해야 할 일이 없습니다. 🎉"
+            messages = [
+                ChatMessage(role="user", content=prompt)
+            ]
             
-            response = f"📋 **할일 목록** (총 {count}개)\n\n"
+            llm_response = await self.llm_provider.generate_response(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2048  # 응답 생성 토큰 수 증가 (512→2048)
+            )
             
-            for i, todo in enumerate(todos[:5], 1):  # 최대 5개만 표시
-                title = todo.get("title", "제목 없음")
-                priority = todo.get("priority", "중간")
-                status = todo.get("status", "상태 없음")
-                due_date = todo.get("due_date", "")
+            if llm_response and llm_response.content and llm_response.content.strip():
+                return llm_response.content.strip()
+            else:
+                return "요청하신 작업을 완료했습니다."
                 
-                # 우선순위 이모지
-                priority_emoji = {"높음": "🔴", "중간": "🟡", "낮음": "🟢"}.get(priority, "⚪")
-                
-                # 상태 이모지  
-                status_emoji = {"진행 중": "⏳", "예정": "📅", "완료": "✅"}.get(status, "📝")
-                
-                response += f"{i}. {priority_emoji} **{title}**\n"
-                response += f"   {status_emoji} {status}"
-                
-                if due_date:
-                    # 날짜 포맷팅
-                    try:
-                        from datetime import datetime
-                        if "T" in due_date:
-                            date_obj = datetime.fromisoformat(due_date.replace("Z", "+00:00"))
-                            formatted_date = date_obj.strftime("%m월 %d일")
-                        else:
-                            formatted_date = due_date
-                        response += f" | 📅 {formatted_date}"
-                    except:
-                        response += f" | 📅 {due_date}"
-                
-                response += "\n\n"
-            
-            if len(todos) > 5:
-                response += f"... 외 {len(todos) - 5}개 더"
-            
-            return response.strip()
-            
         except Exception as e:
-            logger.error(f"할일 응답 포맷팅 실패: {e}")
-            return f"할일 {data.get('count', 0)}개를 확인했습니다."
+            logger.error(f"자연어 답변 생성 실패: {e}")
+            return "작업이 완료되었습니다."
     
     async def _generate_partial_result(self, scratchpad: AgentScratchpad, context: AgentContext) -> str:
-        """부분 결과 생성"""
+        """부분 결과 생성 - 자연어로 요약"""
         try:
-            completed_steps = sum(
-                1 for step in scratchpad.steps 
-                if step.observation and step.observation.success
-            )
-            total_steps = len(scratchpad.steps)
+            # 부분 결과도 자연어로 생성
+            completed_count = 0
+            for step in scratchpad.steps:
+                if step.observation and step.observation.success:
+                    completed_count += 1
+                
+            if completed_count == 0:
+                return "요청하신 작업을 시작했지만 아직 완료되지 않았습니다."
             
-            return f"부분적으로 완료됨: {completed_steps}/{total_steps} 단계 성공"
+            return f"{completed_count}개 작업을 완료했지만 전체 요청은 아직 진행 중입니다."
             
         except Exception as e:
             logger.error(f"부분 결과 생성 실패: {e}")

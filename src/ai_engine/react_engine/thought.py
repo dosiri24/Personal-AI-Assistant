@@ -40,7 +40,7 @@ class ThoughtGenerator:
             response = await self.llm_provider.generate_response(
                 messages=messages,
                 temperature=0.4,  # 빠른 결정을 위해 온도 감소
-                max_tokens=4096  # 사고 과정 토큰 수 증가 (1024->2048)
+                max_tokens=8192  # 사고 과정 토큰 수 증가 (4096→8192)
             )
             
             thought_content = response.content.strip()

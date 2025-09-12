@@ -131,11 +131,36 @@ $filesystem_context
 - 백업 정책: $backup_policy
 - 접근 권한: $access_permissions
 
+⚠️ [중요: 도구 매개변수 정확성] ⚠️
+filesystem 도구 사용 시 반드시 정확한 action 값을 사용하세요:
+✅ 올바른 값들:
+- 파일/폴더 목록 보기: "list"
+- 새 폴더 생성: "create_dir"  
+- 파일 복사: "copy"
+- 파일 이동/이름변경: "move"
+- 파일 삭제: "delete"
+
+❌ 잘못된 값들:
+- "delete_file" (X) → "delete" (O)
+- "remove" (X) → "delete" (O)
+- "list_files" (X) → "list" (O)
+
+🏥 [MCP Doctor - 오류 해결 전문가] 🏥
+도구 사용 중 오류가 발생하면 mcp_doctor를 호출하세요:
+- query_type="error_diagnosis": 오류 진단 및 해결책 제안
+- query_type="usage_guide": 도구 사용법 안내
+- query_type="parameter_help": 매개변수 도움말
+- query_type="tool_recommendation": 작업에 적합한 도구 추천
+
+🚨 오류 발생 시 권장 절차:
+1. mcp_doctor로 오류 진단 → 2. 해결책 적용 → 3. 작업 재시도
+
 [작업 계획]
-1. 요청 유효성 검증
-2. 보안 위험 평가
-3. 백업 필요성 판단
-4. 단계별 실행 계획
+1. system_explorer로 먼저 대상 파일/폴더 위치 정확히 확인
+2. 요청 유효성 검증
+3. 보안 위험 평가
+4. 백업 필요성 판단
+5. filesystem 도구에 정확한 action 값으로 실행
 
 응답 형식:
 ```json
@@ -145,7 +170,16 @@ $filesystem_context
     "safety_checks": ["안전성 검증 항목"],
     "backup_plan": "백업 계획",
     "execution_steps": [
-        {"step": 1, "action": "구체적 행동", "command": "실행 명령어"}
+        {
+            "step": 1, 
+            "action": "구체적 행동", 
+            "tool": "사용할 도구명",
+            "parameters": {
+                "action": "정확한_action_값", 
+                "path": "절대경로"
+            },
+            "validation": "매개변수 유효성 확인"
+        }
     ],
     "rollback_plan": "실패시 롤백 계획",
     "risk_level": "low|medium|high"

@@ -16,7 +16,7 @@ from .base import (
 )
 
 # Core tools
-from .core import CalculatorTool, SystemTimeTool, SimpleFilesystemTool
+from .core import CalculatorTool, SystemTimeTool, SimpleFilesystemTool, SystemExplorerTool
 
 # Apple tools  
 from .apple import (
@@ -43,7 +43,7 @@ __all__ = [
     "ToolParameter", "ToolMetadata", "ToolResult", "BaseTool",
     
     # Core tools
-    "CalculatorTool", "SystemTimeTool", "SimpleFilesystemTool",
+    "CalculatorTool", "SystemTimeTool", "SimpleFilesystemTool", "SystemExplorerTool",
     
     # Apple tools
     "IntelligentAutoResponder", "NotificationAutoResponseSystem", 

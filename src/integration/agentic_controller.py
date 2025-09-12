@@ -458,7 +458,7 @@ class AgenticController:
             response = await self.llm_provider.generate_response(
                 messages,
                 temperature=0.2,  # 빠른 판단을 위해 온도 감소
-                max_tokens=4096   # 요청에 따라 4096으로 상향
+                max_tokens=8192   # 응답 생성 토큰 수 증가 (4096→8192)
             )
             
             if response and response.content:

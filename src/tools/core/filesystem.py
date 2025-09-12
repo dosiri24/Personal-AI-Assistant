@@ -19,6 +19,9 @@ from src.tools.base import (
     BaseTool, ToolResult, ToolMetadata, ToolParameter, 
     ParameterType, ToolCategory, ExecutionStatus
 )
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class SimpleFilesystemTool(BaseTool):
@@ -68,18 +71,66 @@ class SimpleFilesystemTool(BaseTool):
             timeout=30
         )
     
+    def validate_parameters(self, parameters: Dict[str, Any]) -> List[str]:
+        """매개변수 검증 - 더 명확한 에러 메시지 제공"""
+        errors = super().validate_parameters(parameters)
+        
+        # action 매개변수 특별 검증
+        action = parameters.get("action")
+        if action:
+            valid_actions = ["list", "create_dir", "copy", "move", "delete"]
+            if action not in valid_actions:
+                errors.append(
+                    f"❌ 매개변수 'action'의 값이 유효하지 않습니다: '{action}'\n"
+                    f"✅ 유효한 값들: {', '.join(valid_actions)}\n"
+                    f"💡 힌트: 파일 삭제는 'delete'를 사용하세요 ('delete_file' 아님!)"
+                )
+        
+        return errors
+
+    def _auto_correct_parameters(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """매개변수 자동 정정"""
+        corrected = parameters.copy()
+        
+        # 잘못된 action 값 자동 수정
+        action_corrections = {
+            "delete_file": "delete",
+            "remove": "delete",
+            "remove_file": "delete",
+            "list_files": "list",
+            "create_directory": "create_dir",
+            "mkdir": "create_dir"
+        }
+        
+        if "action" in corrected:
+            original_action = corrected["action"]
+            if original_action in action_corrections:
+                corrected["action"] = action_corrections[original_action]
+                logger.info(f"filesystem action 매개변수 자동 정정: '{original_action}' → '{corrected['action']}'")
+        
+        return corrected
+
     def _is_safe_path(self, path: str) -> bool:
-        """경로 안전성 검증"""
         try:
-            abs_path = os.path.abspath(path)
+            # 경로 정규화 및 확장
+            expanded_path = os.path.expanduser(path)
+            abs_path = os.path.abspath(expanded_path)
             return any(abs_path.startswith(os.path.abspath(allowed)) 
                       for allowed in self.allowed_paths)
         except Exception:
             return False
 
+    def _normalize_path(self, path: str) -> str:
+        """경로 정규화 - 틸드 확장만 수행"""
+        # 틸드 확장만 수행, 스마트 매핑은 system_explorer가 담당
+        return os.path.expanduser(path)
+
     async def execute(self, parameters: Dict[str, Any]) -> ToolResult:
         """도구 실행"""
         try:
+            # 매개변수 자동 정정
+            parameters = self._auto_correct_parameters(parameters)
+            
             # 매개변수 검증
             validation_errors = self.validate_parameters(parameters)
             if validation_errors:
@@ -92,11 +143,16 @@ class SimpleFilesystemTool(BaseTool):
             path = parameters["path"]
             destination = parameters.get("destination")
             
+            # 경로 정규화
+            path = self._normalize_path(path)
+            if destination:
+                destination = self._normalize_path(destination)
+            
             # 경로 안전성 검증
             if not self._is_safe_path(path):
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
-                    error_message="허용되지 않은 경로입니다"
+                    error_message=f"허용되지 않은 경로입니다: {path}"
                 )
             
             # 작업별 실행
@@ -245,10 +301,50 @@ class SimpleFilesystemTool(BaseTool):
     async def _delete_item(self, path: str) -> ToolResult:
         """파일/디렉토리 삭제"""
         try:
+            # 경로가 디렉토리이고 "스크린샷" 관련 요청인 경우 특별 처리
+            if os.path.isdir(path) and any(keyword in path.lower() for keyword in ["desktop", "바탕화면"]):
+                # 스크린샷 파일 패턴
+                screenshot_patterns = [
+                    "스크린샷*.png", "스크린샷*.jpg", "스크린샷*.jpeg",
+                    "Screenshot*.png", "Screenshot*.jpg", "Screenshot*.jpeg",
+                    "Screen Shot*.png", "Screen Shot*.jpg", "Screen Shot*.jpeg"
+                ]
+                
+                deleted_files = []
+                import glob
+                
+                for pattern in screenshot_patterns:
+                    files = glob.glob(os.path.join(path, pattern))
+                    for file_path in files:
+                        try:
+                            os.remove(file_path)
+                            deleted_files.append(os.path.basename(file_path))
+                        except Exception as e:
+                            logger.warning(f"파일 삭제 실패: {file_path} - {e}")
+                
+                if deleted_files:
+                    return ToolResult(
+                        status=ExecutionStatus.SUCCESS,
+                        data={
+                            "message": f"스크린샷 파일 {len(deleted_files)}개 삭제 완료",
+                            "deleted_files": deleted_files,
+                            "path": path
+                        }
+                    )
+                else:
+                    return ToolResult(
+                        status=ExecutionStatus.SUCCESS,
+                        data={
+                            "message": "삭제할 스크린샷 파일이 없습니다",
+                            "path": path
+                        }
+                    )
+            
+            # 일반적인 파일/디렉토리 삭제
             if not os.path.exists(path):
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
-                    error_message="삭제할 경로가 존재하지 않습니다"
+                    error_message=f"삭제할 경로가 존재하지 않습니다: {path}"
                 )
             
             if os.path.isdir(path):

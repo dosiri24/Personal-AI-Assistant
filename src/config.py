@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     google_ai_api_key: str = Field(default="", description="Google Gemini API 키")
     ai_model: str = Field(default="gemini-2.5-pro", description="사용할 AI 모델")
     ai_temperature: float = Field(default=0.7, description="AI 응답 온도")
-    ai_max_tokens: int = Field(default=8192, description="AI 최대 토큰 수")
+    ai_max_tokens: int = Field(default=16384, description="AI 최대 토큰 수 (8192→16384로 증가)")
     gemini_api_rate_limit: int = Field(default=60, description="Gemini API 분당 요청 제한")
     
     # Notion 설정

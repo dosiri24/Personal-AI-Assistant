@@ -200,7 +200,7 @@ class GeminiProvider(LLMProvider):
                 default_max = getattr(self.config, 'ai_max_tokens', None)
             except Exception:
                 default_max = None
-            config_dict['max_output_tokens'] = max_tokens if max_tokens is not None else (default_max or 8192)
+            config_dict['max_output_tokens'] = max_tokens if max_tokens is not None else (default_max or 16384)  # 8192→16384로 증가
             
             # 응답 생성
             try:

@@ -14,6 +14,7 @@ from enum import Enum
 from datetime import datetime, timedelta
 
 from .llm_provider import LLMProvider, ChatMessage
+from .smart_file_matcher import SmartFileMatcher
 from .agent_state import AgentContext
 from ..utils.logger import get_logger
 
@@ -109,9 +110,10 @@ class PlanningEngine:
     
     def __init__(self, llm_provider: LLMProvider):
         self.llm_provider = llm_provider
+        self.smart_file_matcher = SmartFileMatcher(llm_provider)
         self.active_plans: Dict[str, ExecutionPlan] = {}
         
-        logger.info("계획 수립 엔진 초기화 완료")
+        logger.info("계획 수립 엔진 초기화 완료 (SmartFileMatcher 포함)")
     
     async def create_execution_plan(
         self, 
@@ -229,12 +231,52 @@ class PlanningEngine:
 - 사용자 선호도: {context.user_preferences}
 - 제약 조건: {context.constraints}
 
-**🔍 파일 작업 필수 원칙**:
-⚠️ 파일/폴더 작업을 수행하기 전에 반드시 다음을 확인하세요:
-1. 첫 번째 단계는 항상 filesystem 도구로 대상 경로의 실제 상태를 list로 확인
-2. 파일과 폴더를 구분하여 확인 (파일을 폴더로 착각하지 마세요!)
-3. 존재하지 않는 파일/폴더를 가정하지 마세요
-4. 실제 확인 결과를 바탕으로 후속 단계를 계획하세요
+**🔍 파일/시스템 작업 필수 원칙**:
+⚠️ 파일 관련 작업을 수행하기 전에 반드시 다음 순서를 따르세요:
+
+1. **첫 번째 단계**: system_explorer 도구로 대상 디렉토리 구조 파악
+   - action="get_structure" 또는 "tree"로 디렉토리 내 파일들 확인
+   - 사용자가 언급한 위치(바탕화면, 문서, 다운로드 등)의 실제 경로 확인
+
+2. **두 번째 단계**: 필요시 구체적인 파일 필터링
+   - action="search_files" 또는 "find"로 특정 패턴의 파일들만 추출
+   - 작업 대상을 명확히 식별
+
+3. **세 번째 단계**: 실제 파일 작업 수행
+   - 탐색 결과를 바탕으로 정확한 경로와 파일명으로 작업 진행
+   - 하드코딩된 경로나 패턴 대신 탐색으로 발견한 실제 파일들 사용
+
+**💡 스마트 파일 매칭 전략**:
+- 1단계: system_explorer로 대상 디렉토리의 전체 파일 목록 수집
+- 2단계: 파일 목록 + 사용자 요청을 LLM에게 전달하여 관련 파일들 직접 식별
+- 3단계: LLM이 선택한 정확한 파일들에 대해서만 작업 수행
+- 장점: 패턴 매칭 오류 없음, 자연어로 유연한 요청 가능, 정확한 파일 식별
+
+**⚡ 도구별 정확한 매개변수 (필수 준수!)** ⚡:
+
+🔧 **system_explorer** 도구:
+✅ 올바른 action 값들: "tree", "find", "locate", "explore_common", "get_structure", "search_files"
+❌ 잘못된 값들: "find_files", "list", "search"
+
+🔧 **filesystem** 도구:
+✅ 올바른 action 값들: "list", "create_dir", "copy", "move", "delete" 
+❌ 잘못된 값들: "delete_file", "remove", "find", "search"
+
+🏥 **mcp_doctor** 도구 - 오류 해결 전문가:
+✅ query_type 값들: "usage_guide", "error_diagnosis", "parameter_help", "tool_recommendation"
+📋 사용법: 도구 사용 중 오류 발생 시 mcp_doctor에게 문의하여 해결책 받기
+
+**🚨 오류 발생 시 필수 절차** 🚨:
+1. 도구 사용 중 매개변수 오류 발생 시 즉시 mcp_doctor 호출
+2. query_type="error_diagnosis"로 오류 메시지 전달
+3. mcp_doctor의 해결책에 따라 올바른 매개변수로 재시도
+4. 도구 사용법이 불확실한 경우 query_type="usage_guide"로 사전 문의
+
+**🚀 스마트 파일 선택 전략**:
+- "바탕화면", "desktop", "데스크탑" → system_explorer로 실제 Desktop 폴더 탐색
+- 전체 파일 목록을 수집한 후, 사용자 요청("스크린샷", "PDF", "큰 파일" 등)과 함께 LLM에게 전달
+- LLM이 파일명, 확장자, 속성을 보고 사용자 의도에 맞는 파일들 직접 선택
+- 패턴 매칭 없이 자연어 이해로 정확한 파일 식별
 
 **요구사항**:
 1. 목표를 달성하기 위한 구체적인 단계들을 나열해주세요
@@ -425,3 +467,77 @@ class PlanningEngine:
             steps=updated_steps,
             execution_strategy=original_plan.execution_strategy
         )
+    
+    async def create_smart_file_plan(
+        self,
+        goal: str,
+        target_directory: str,
+        context: AgentContext
+    ) -> ExecutionPlan:
+        """
+        스마트 파일 매칭을 사용한 파일 작업 계획 생성
+        
+        Args:
+            goal: 사용자 목표 (예: "스크린샷 파일 삭제")
+            target_directory: 대상 디렉토리 경로
+            context: 에이전트 컨텍스트
+        """
+        try:
+            # 1단계: 디렉토리 탐색 계획
+            explore_step = PlanStep(
+                step_id="explore_directory",
+                description=f"{target_directory} 디렉토리의 전체 파일 목록 수집",
+                action_type="tool_call",
+                tool_name="system_explorer",
+                tool_params={
+                    "action": "get_structure",
+                    "path": target_directory,
+                    "depth": 1
+                },
+                priority=TaskPriority.HIGH,
+                estimated_duration=15.0,
+                success_criteria="파일 목록 수집 완료",
+                failure_recovery="대안 경로로 탐색 재시도"
+            )
+            
+            # 2단계: 스마트 파일 매칭 계획
+            match_step = PlanStep(
+                step_id="smart_file_matching", 
+                description=f"사용자 요청 '{goal}'에 맞는 파일들 지능적 식별",
+                action_type="reasoning",
+                dependencies=["explore_directory"],
+                priority=TaskPriority.HIGH,
+                estimated_duration=10.0,
+                success_criteria="대상 파일들 정확히 식별",
+                failure_recovery="사용자에게 명확화 요청"
+            )
+            
+            # 3단계: 파일 작업 실행 계획 (동적 생성됨)
+            execute_step = PlanStep(
+                step_id="execute_file_operation",
+                description="식별된 파일들에 대한 요청된 작업 수행",
+                action_type="tool_call",
+                tool_name="filesystem",  # 실제 작업에 따라 변경됨
+                dependencies=["smart_file_matching"],
+                priority=TaskPriority.CRITICAL,
+                estimated_duration=20.0,
+                success_criteria="파일 작업 성공적 완료",
+                failure_recovery="백업에서 복구 또는 부분 실행"
+            )
+            
+            plan = ExecutionPlan(
+                plan_id=f"smart_file_plan_{int(time.time())}",
+                goal=goal,
+                steps=[explore_step, match_step, execute_step],
+                execution_strategy="sequential"
+            )
+            
+            self.active_plans[plan.plan_id] = plan
+            logger.info(f"스마트 파일 계획 생성 완료: {plan.plan_id}")
+            
+            return plan
+            
+        except Exception as e:
+            logger.error(f"스마트 파일 계획 생성 실패: {e}")
+            # 기본 계획으로 폴백
+            return self._create_fallback_plan(goal)
