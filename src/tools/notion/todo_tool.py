@@ -629,10 +629,27 @@ class TodoTool(BaseTool):
                 raise NotionError("Notion 클라이언트 초기화 실패")
             
             todo_id = params.get("todo_id") or params.get("id")
+            target_title = params.get("target_title")
+            
+            # ID가 없고 target_title이 있으면 제목으로 검색해서 ID 찾기
+            if not todo_id and target_title:
+                # 할일 목록 조회해서 매칭되는 것 찾기
+                list_result = await self._list_todos({"filter": "pending"})
+                if list_result.status == ExecutionStatus.SUCCESS and list_result.data:
+                    todos = list_result.data.get("todos", [])
+                    for todo in todos:
+                        if target_title.lower() in todo.get("title", "").lower():
+                            todo_id = todo.get("id")
+                            logger.info(f"제목으로 할일 ID 찾음: {target_title} -> {todo_id}")
+                            break
+            
             if not todo_id:
+                error_msg = "완료 처리할 할일 ID가 필요합니다"
+                if target_title:
+                    error_msg += f" ('{target_title}' 제목의 할일을 찾을 수 없습니다)"
                 return ToolResult(
                     status=ExecutionStatus.ERROR,
-                    error_message="완료 처리할 할일 ID가 필요합니다"
+                    error_message=error_msg
                 )
             
             # 완료 상태 설정 (기본값: 완료)

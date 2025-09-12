@@ -2,19 +2,31 @@
 ReAct Engine 모듈
 
 Reasoning and Acting (ReAct) 패러다임을 구현하는 모듈화된 엔진
-
-중복/누락된 모듈 정리: 현재 저장소에는 core.py, planning.py만 존재하므로
-이들만 외부로 노출합니다. (thought/observation/execution/adaptation은 추후 추가 시 복원)
+🌟 자연어 기반 시스템으로 전환: JSON 구조 강제 없이 순수 LLM 추론 활용
 """
 
 def __getattr__(name: str):
     """Lazy attribute access to avoid import cycles during package init."""
     if name == 'ReactEngine':
-        from .core import ReactEngine as _ReactEngine
-        return _ReactEngine
+        # 🌟 기본적으로 자연어 기반 엔진 사용
+        from .natural_adapter import NaturalReactEngine as _NaturalReactEngine
+        return _NaturalReactEngine
     if name == 'PlanningExecutor':
-        from .planning import PlanningExecutor as _PlanningExecutor
-        return _PlanningExecutor
+        # 🌟 자연어 기반 실행기 사용
+        from .natural_planning import NaturalPlanningExecutor as _NaturalPlanningExecutor
+        return _NaturalPlanningExecutor
+    if name == 'NaturalReactEngine':
+        from .natural_adapter import NaturalReactEngine as _NaturalReactEngine
+        return _NaturalReactEngine
+    if name == 'NaturalPlanningExecutor':
+        from .natural_planning import NaturalPlanningExecutor as _NaturalPlanningExecutor
+        return _NaturalPlanningExecutor
+    if name == 'LegacyReactEngine':
+        # 기존 구조화된 엔진 (필요시 사용)
+        from .core import ReactEngine as _LegacyReactEngine
+        return _LegacyReactEngine
+    if name == 'LegacyPlanningExecutor':
+        # 기존 구조화된 실행기 (필요시 사용)
+        from .planning import PlanningExecutor as _LegacyPlanningExecutor
+        return _LegacyPlanningExecutor
     raise AttributeError(name)
-
-__all__ = ['ReactEngine', 'PlanningExecutor']

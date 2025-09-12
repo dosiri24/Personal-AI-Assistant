@@ -123,6 +123,12 @@ class PlanningExecutor:
                 step_failure_count[step_id] = step_failure_count.get(step_id, 0) + 1
                 logger.warning(f"단계 {step_id} 실패 (총 {step_failure_count[step_id]}회)")
             else:
+                # 성공시 검증 결과 확인
+                verification = execution_result.get("verification", {})
+                if not verification.get("verified", True):  # 검증이 없으면 기본 성공으로 간주
+                    logger.warning(f"단계 {step_id} 성공 보고되었으나 검증 실패: {verification.get('warning', '알 수 없음')}")
+                    # 검증 실패를 로그에 기록하지만 실행은 계속 진행
+                
                 # 성공시 카운트 리셋
                 step_failure_count.pop(step_id, None)
             
@@ -209,12 +215,19 @@ class PlanningExecutor:
                         data=step.result.data
                     )
                     
+                    # 🔍 실제 작업 완료 검증
+                    verification_result = await self._verify_step_completion(step, scratchpad)
+                    
+                    if not verification_result.get("verified", False):
+                        logger.warning(f"검증 실패: {step.step_id} - {verification_result.get('warning', '알 수 없는 문제')}")
+                    
                     logger.info(f"계획 단계 성공: {step.step_id}")
                     
                     return {
                         "status": "success",
                         "result": step.result.data,
-                        "expected_duration": step.estimated_duration
+                        "expected_duration": step.estimated_duration,
+                        "verification": verification_result
                     }
                     
                 else:
@@ -234,10 +247,14 @@ class PlanningExecutor:
                 step.status = PlanTaskStatus.COMPLETED
                 logger.info(f"추론 단계 완료: {step.step_id}")
                 
+                # 🔍 추론 단계의 경우 실제 작업이 수행되었는지 검증
+                verification_result = await self._verify_step_completion(step, scratchpad)
+                
                 return {
                     "status": "success",
                     "result": step.description,
-                    "expected_duration": step.estimated_duration
+                    "expected_duration": step.estimated_duration,
+                    "verification": verification_result
                 }
                 
         except Exception as e:
@@ -467,3 +484,54 @@ class PlanningExecutor:
         except Exception as e:
             logger.error(f"부분 결과 생성 실패: {e}")
             return "작업이 부분적으로 완료되었습니다."
+    
+    async def _verify_step_completion(self, step, scratchpad) -> Dict[str, Any]:
+        """
+        단계 완료 검증 - 실제로 작업이 수행되었는지 확인
+        
+        Args:
+            step: 실행된 단계
+            scratchpad: 실행 기록
+            
+        Returns:
+            Dict: 검증 결과
+        """
+        try:
+            verification = {
+                "verified": False,
+                "actual_actions_performed": 0,
+                "reasoning_only": True,
+                "warning": None
+            }
+            
+            # Scratchpad에서 실제 도구 호출이 있었는지 확인
+            tool_actions = []
+            for action_record in scratchpad.actions:
+                if action_record.action_type == "tool_call":
+                    tool_actions.append({
+                        "tool": action_record.tool_name,
+                        "params": action_record.parameters
+                    })
+            
+            verification["actual_actions_performed"] = len(tool_actions)
+            verification["tool_actions"] = tool_actions
+            
+            # 실제 도구 호출이 있었다면 검증됨
+            if len(tool_actions) > 0:
+                verification["verified"] = True
+                verification["reasoning_only"] = False
+            else:
+                # 도구 호출이 없으면 추론만 한 것으로 간주
+                verification["warning"] = "실제 도구 실행 없이 추론만 수행됨"
+                logger.warning(f"단계 {step.step_id}: 실제 작업 없이 추론만 완료")
+            
+            return verification
+            
+        except Exception as e:
+            logger.error(f"단계 검증 실패: {e}")
+            return {
+                "verified": False,
+                "error": str(e),
+                "actual_actions_performed": 0,
+                "reasoning_only": True
+            }

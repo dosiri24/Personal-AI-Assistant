@@ -144,12 +144,16 @@ class PlanningEngine:
             
             plan_data = self._parse_plan_response(response.content, goal)
             
-            # ExecutionPlan 객체 생성
+            # 🤖 에이전틱 AI 원칙: 순수 LLM 추론을 통한 계획 검증
+            logger.info("계획 품질 검증 수행 (순수 LLM 추론)")
+            validated_plan_data = await self._validate_plan_with_llm(plan_data, goal, available_tools)
+            
+            # ExecutionPlan 객체 생성 (검증된 데이터 사용)
             plan = ExecutionPlan(
                 plan_id=f"plan_{int(time.time())}",
                 goal=goal,
-                steps=plan_data["steps"],
-                execution_strategy=plan_data.get("strategy", "sequential")
+                steps=validated_plan_data["steps"],
+                execution_strategy=validated_plan_data.get("strategy", "sequential")
             )
             
             # 계획 등록
@@ -262,15 +266,23 @@ class PlanningEngine:
 ✅ 올바른 action 값들: "list", "create_dir", "copy", "move", "delete" 
 ❌ 잘못된 값들: "delete_file", "remove", "find", "search"
 
-🏥 **mcp_doctor** 도구 - 오류 해결 전문가:
+🏥 **mcp_doctor** 도구 - 오류 해결 전문가 (적극 활용 권장!):
 ✅ query_type 값들: "usage_guide", "error_diagnosis", "parameter_help", "tool_recommendation"
-📋 사용법: 도구 사용 중 오류 발생 시 mcp_doctor에게 문의하여 해결책 받기
+📋 활용 시점:
+  1. 새로운 도구 사용 전 → query_type="usage_guide"로 사용법 확인
+  2. 매개변수 불확실 시 → query_type="parameter_help"로 매개변수 정보 요청
+  3. 작업 유형별 최적 도구 → query_type="tool_recommendation"로 도구 추천 요청
+  4. 계획 수립 시 불확실한 부분이 있으면 mcp_doctor 단계를 먼저 추가하세요!
 
 **🚨 오류 발생 시 필수 절차** 🚨:
 1. 도구 사용 중 매개변수 오류 발생 시 즉시 mcp_doctor 호출
 2. query_type="error_diagnosis"로 오류 메시지 전달
 3. mcp_doctor의 해결책에 따라 올바른 매개변수로 재시도
 4. 도구 사용법이 불확실한 경우 query_type="usage_guide"로 사전 문의
+
+**🎯 에이전틱 AI 원칙**: 
+⚠️ 키워드 매칭이나 하드코딩된 패턴 사용 금지!
+✅ 모든 판단은 순수 LLM 추론과 실제 도구 실행 결과를 바탕으로!
 
 **🚀 스마트 파일 선택 전략**:
 - "바탕화면", "desktop", "데스크탑" → system_explorer로 실제 Desktop 폴더 탐색
@@ -539,5 +551,157 @@ class PlanningEngine:
             
         except Exception as e:
             logger.error(f"스마트 파일 계획 생성 실패: {e}")
+            return self._create_fallback_plan(goal)
+    
+    async def _validate_plan_with_llm(
+        self, 
+        plan_data: Dict[str, Any], 
+        goal: str, 
+        available_tools: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        순수 LLM 추론을 통한 계획 검증 및 개선
+        
+        에이전틱 AI 원칙: 키워드 파싱이나 규칙 기반 검증 대신 
+        LLM이 직접 계획의 실행 가능성과 논리성을 분석합니다.
+        """
+        logger.info("LLM을 통한 계획 검증 시작")
+        
+        # MCP Doctor 도구 정보 포함
+        validation_prompt = f"""
+당신은 AI 계획 검토 전문가입니다. 다음 실행 계획을 검토하고 개선해주세요.
+
+**목표**: {goal}
+
+**현재 계획**:
+{self._format_plan_for_validation(plan_data)}
+
+**사용 가능한 도구들**:
+{self._format_tools_for_validation(available_tools)}
+
+**🎯 계획 검토 기준**:
+
+1. **실행 가능성**: 각 단계가 실제로 실행 가능한가?
+2. **논리적 순서**: 단계들의 순서가 논리적인가?
+3. **의존성 관리**: 필요한 의존성이 올바르게 설정되었는가?
+4. **도구 사용법**: 각 도구의 매개변수가 올바른가?
+5. **목표 달성**: 이 계획으로 목표를 달성할 수 있는가?
+
+**⚠️ 특별 주의사항**:
+- 파일 작업 시: 먼저 탐색하여 실제 파일을 찾은 후 작업해야 함
+- 추상적 플레이스홀더 금지: `<식별된_파일_경로>` 같은 가상의 값 사용 금지
+- 구체적 경로 사용: 실제 탐색 결과를 바탕으로 한 정확한 경로만 사용
+
+**🔧 MCP Doctor 활용**:
+도구 사용법이 불확실하거나 오류가 예상되는 경우, 
+mcp_doctor 도구에 query_type="usage_guide" 또는 "parameter_help"로 문의하는 단계를 추가하세요.
+
+**📋 검토 결과 요청**:
+
+1. 현재 계획에서 발견된 문제점들을 분석해주세요
+2. 문제가 있다면 개선된 계획을 제안해주세요
+3. 문제가 없다면 "검증 완료"라고 응답해주세요
+
+응답 형식:
+```json
+{{
+    "validation_result": "pass|needs_improvement",
+    "issues_found": ["문제1", "문제2", ...],
+    "improved_plan": {{
+        "strategy": "sequential|parallel|adaptive",
+        "steps": [...]
+    }} // needs_improvement인 경우만
+}}
+```
+
+⚠️ 주의: 개선된 계획에서는 반드시 실행 가능하고 구체적인 단계들만 포함해주세요.
+"""
+        
+        try:
+            response = await self.llm_provider.generate_response([
+                ChatMessage(role="user", content=validation_prompt)
+            ])
+            
+            # LLM 응답 파싱
+            validation_result = self._parse_validation_response(response.content)
+            
+            if validation_result["validation_result"] == "pass":
+                logger.info("계획 검증 통과")
+                return plan_data
+            elif validation_result["validation_result"] == "needs_improvement":
+                logger.info(f"계획 개선 필요: {validation_result.get('issues_found', [])}")
+                improved_plan = validation_result.get("improved_plan", plan_data)
+                return improved_plan
+            else:
+                logger.warning("검증 결과를 파싱할 수 없음, 원본 계획 사용")
+                return plan_data
+                
+        except Exception as e:
+            logger.error(f"LLM 계획 검증 실패: {e}")
+            # 검증 실패 시 원본 계획 사용
+            return plan_data
+    
+    def _format_tools_for_validation(self, available_tools: List[Dict[str, Any]]) -> str:
+        """검증용 도구 정보 포매팅"""
+        tool_descriptions = []
+        for tool in available_tools:
+            name = tool.get("name", "unknown")
+            description = tool.get("description", "")
+            tool_descriptions.append(f"- {name}: {description}")
+        
+        return "\n".join(tool_descriptions)
+    
+    def _parse_validation_response(self, response: str) -> Dict[str, Any]:
+        """LLM 검증 응답 파싱"""
+        try:
+            # JSON 응답 추출
+            if "```json" in response:
+                json_start = response.find("```json") + 7
+                json_end = response.find("```", json_start)
+                json_text = response[json_start:json_end].strip()
+            else:
+                json_text = response.strip()
+            
+            result = json.loads(json_text)
+            return result
+            
+        except Exception as e:
+            logger.error(f"검증 응답 파싱 실패: {e}")
+            # 파싱 실패 시 기본값 반환
+            return {"validation_result": "pass"}
+    
+    def _format_plan_for_validation(self, plan_data: Dict[str, Any]) -> str:
+        """계획 데이터를 검증용 텍스트로 포매팅"""
+        try:
+            # PlanStep 객체들을 딕셔너리로 변환
+            formatted_plan = {
+                "strategy": plan_data.get("strategy", "sequential"),
+                "steps": []
+            }
+            
+            for step in plan_data.get("steps", []):
+                if hasattr(step, '__dict__'):
+                    # PlanStep 객체인 경우 딕셔너리로 변환
+                    step_dict = {
+                        "step_id": getattr(step, 'step_id', 'unknown'),
+                        "description": getattr(step, 'description', ''),
+                        "action_type": getattr(step, 'action_type', ''),
+                        "tool_name": getattr(step, 'tool_name', None),
+                        "tool_params": getattr(step, 'tool_params', {}),
+                        "dependencies": getattr(step, 'dependencies', []),
+                        "priority": getattr(step, 'priority', 2),
+                        "estimated_duration": getattr(step, 'estimated_duration', 30.0)
+                    }
+                    formatted_plan["steps"].append(step_dict)
+                else:
+                    # 이미 딕셔너리인 경우 그대로 사용
+                    formatted_plan["steps"].append(step)
+            
+            return json.dumps(formatted_plan, ensure_ascii=False, indent=2)
+            
+        except Exception as e:
+            logger.error(f"계획 포매팅 실패: {e}")
+            # 포매팅 실패 시 기본 정보만 제공
+            return f"계획 포매팅 오류: {str(e)}"
             # 기본 계획으로 폴백
             return self._create_fallback_plan(goal)
