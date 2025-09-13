@@ -101,6 +101,37 @@ class NaturalReactEngine:
         """기존 ReactEngine.execute 호환성 메서드"""
         return await self.process_goal(goal, context, **kwargs)
     
+    async def execute_goal(
+        self,
+        goal: str,
+        context: AgentContext = None,
+        available_tools: list = None,
+        **kwargs
+    ) -> AgentResult:
+        """
+        목표 실행 (AgenticController에서 호출되는 메서드)
+        
+        Args:
+            goal: 실행할 목표
+            context: 실행 컨텍스트 (없으면 기본 생성)
+            available_tools: 사용 가능한 도구 목록
+            **kwargs: 추가 옵션
+            
+        Returns:
+            AgentResult: 실행 결과
+        """
+        # 컨텍스트가 없으면 기본 생성
+        if context is None:
+            context = AgentContext(
+                user_id="default",
+                session_id="default_session",
+                goal=goal,
+                available_tools=available_tools or [],
+                max_iterations=kwargs.get('max_iterations', 15)
+            )
+        
+        return await self.process_goal(goal, context, **kwargs)
+    
     async def process_user_request(
         self, 
         user_input: str, 

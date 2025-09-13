@@ -19,6 +19,10 @@ import atexit
 import signal
 from pathlib import Path
 
+# gRPC DNS resolver 설정 (Gemini API 연결 문제 해결)
+os.environ['GRPC_DNS_RESOLVER'] = 'native'
+os.environ['GRPC_VERBOSITY'] = 'ERROR'
+
 
 def _ensure_project_on_path() -> None:
     root = Path(__file__).resolve().parent

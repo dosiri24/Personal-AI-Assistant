@@ -217,8 +217,13 @@ class GeminiProvider(LLMProvider):
                         generation_config=config_dict,
                     )
                 except Exception as e:
+                    logger.warning(f"Gemini API 호출 실패 (1차 시도): {e}")
                     # 혹시 모를 fallback
-                    return self.model.generate_content(prompt)  # type: ignore
+                    try:
+                        return self.model.generate_content(prompt)  # type: ignore
+                    except Exception as fallback_e:
+                        logger.error(f"Gemini API 호출 실패 (2차 시도): {fallback_e}")
+                        raise fallback_e
 
             if hasattr(self.model, 'generate_content'):
                 response = await asyncio.to_thread(_do_generate)

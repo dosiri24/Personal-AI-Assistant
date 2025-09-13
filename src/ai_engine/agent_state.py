@@ -11,6 +11,10 @@ from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
+from ..shared.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class ActionType(Enum):
     """행동 유형"""
@@ -720,6 +724,58 @@ class AgentScratchpad:
                 break
         
         return successful_calls >= 2  # 연속 2개 성공 시 목표 달성으로 간주
+    
+    def get_total_length(self) -> int:
+        """현재 Scratchpad의 총 길이 (문자 수)"""
+        try:
+            formatted_history = self.get_formatted_history(include_metadata=True)
+            return len(formatted_history)
+        except Exception:
+            return 0
+    
+    def compress_history(self):
+        """히스토리 압축 - 토큰 절약을 위해"""
+        try:
+            # 최근 3개 스텝만 유지하고 나머지는 요약
+            if len(self.steps) > 3:
+                # 이전 스텝들을 요약으로 대체
+                old_steps = self.steps[:-3]
+                summary_content = self._summarize_steps(old_steps)
+                
+                # 요약을 첫 번째 스텝으로 변환
+                summary_step = ReActStep(step_number=0)
+                summary_step.thought = ThoughtRecord(
+                    content=f"[압축된 이전 이력]: {summary_content}",
+                    reasoning_depth=1,
+                    confidence=1.0
+                )
+                
+                # 최근 3개 스텝과 요약 유지
+                self.steps = [summary_step] + self.steps[-3:]
+                
+                # 추론 이력도 압축
+                if len(self.reasoning_history) > 5:
+                    compressed_reasoning = "... (이전 추론 생략) ..."
+                    self.reasoning_history = [compressed_reasoning] + self.reasoning_history[-5:]
+        
+        except Exception as e:
+            logger.warning(f"히스토리 압축 실패: {e}")
+    
+    def _summarize_steps(self, steps: List[ReActStep]) -> str:
+        """스텝들을 요약"""
+        if not steps:
+            return "이전 작업 없음"
+        
+        successful_actions = []
+        for step in steps:
+            if step.observation and step.observation.success and step.action:
+                if step.action.tool_name:
+                    successful_actions.append(f"{step.action.tool_name} 성공")
+        
+        if successful_actions:
+            return f"이전 {len(steps)}개 단계에서 완료된 작업: {', '.join(successful_actions[-5:])}"
+        else:
+            return f"이전 {len(steps)}개 단계 수행됨"
     
     def to_dict(self) -> Dict[str, Any]:
         """딕셔너리로 변환 (저장/로드용)"""
